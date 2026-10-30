@@ -15,15 +15,21 @@ const ALLOWED = ['statements/settings', 'statements/balance', 'statements/transa
 
 function doGet(e) {
   const p = (e && e.parameter) || {};
-  if (p.key !== ACCESS_KEY) return out_({ status: 'ERROR', message: 'Невірний ключ доступу до мосту' });
+  if (p.path === 'ping') return out_({ status: 'SUCCESS', bridge: 'ok', version: 2, keyOk: p.key === ACCESS_KEY });
+  if (p.key !== ACCESS_KEY) return out_({ status: 'ERROR', message: 'Невірний ключ доступу до мосту. Скопіюйте код мосту з програми ще раз.' });
   if (ALLOWED.indexOf(p.path) < 0) return out_({ status: 'ERROR', message: 'Недозволений запит' });
   const q = ['acc', 'startDate', 'endDate', 'followId', 'limit']
     .filter(function (k) { return p[k]; })
     .map(function (k) { return k + '=' + encodeURIComponent(p[k]); }).join('&');
-  const r = UrlFetchApp.fetch('https://acp.privatbank.ua/api/' + p.path + (q ? '?' + q : ''), {
-    method: 'get', muteHttpExceptions: true,
-    headers: { 'User-Agent': 'fop-income', 'token': PRIVAT_TOKEN, 'Content-Type': 'application/json;charset=utf8' }
-  });
+  let r;
+  try {
+    r = UrlFetchApp.fetch('https://acp.privatbank.ua/api/' + p.path + (q ? '?' + q : ''), {
+      method: 'get', muteHttpExceptions: true,
+      headers: { 'User-Agent': 'fop-income', 'token': PRIVAT_TOKEN, 'Content-Type': 'application/json;charset=utf8' }
+    });
+  } catch (err) {
+    return out_({ status: 'ERROR', stage: 'bank', message: "Міст працює, але не зміг з’єднатися з ПриватБанком: " + err });
+  }
   const text = r.getContentText('UTF-8');
   try { JSON.parse(text); } catch (err) {
     return out_({ status: 'ERROR', message: 'ПриватБанк: HTTP ' + r.getResponseCode() + ' ' + text.slice(0, 300) });
@@ -35,6 +41,34 @@ function out_(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
 }
 `;
+}
+
+// Адреса веб-застосунку: прибираємо зайве і перевіряємо, що це саме /exec
+function cleanBridgeUrl(raw) {
+  let url = String(raw || "").trim().replace(/[?#].*$/, "");
+  if (/^http:\/\/127\.0\.0\.1/.test(url)) return { url };
+  if (!/^https:\/\/script\.google(usercontent)?\.com\/.+/.test(url)) return { error: "Вставте адресу веб-застосунку, яка починається з https://script.google.com/macros/s/…" };
+  if (/\/dev$/.test(url)) return { error: "Це тестова адреса (закінчується на /dev) — вона працює лише для вас у Google. Потрібна адреса з розгортання, що закінчується на /exec: «Розгорнути» → «Керувати розгортаннями» → скопіюйте «URL веб-застосунку»." };
+  if (/\/macros\/s\/[^/]+$/.test(url)) url += "/exec";
+  if (!/\/exec$/.test(url)) return { error: "Адреса мосту має закінчуватися на /exec. Скопіюйте «URL веб-застосунку» з вікна розгортання." };
+  return { url };
+}
+
+function showBridgeDiag(f, url, key, message) {
+  const box = $("#privat-diag", f);
+  if (!box) return toast(message, true);
+  if (!message) { box.hidden = true; return; }
+  const probe = url ? `${url}?path=ping&key=${encodeURIComponent(key)}` : "";
+  box.hidden = false;
+  box.innerHTML = `<b>Не вдалося підключити ПриватБанк.</b> ${esc(message)}`
+    + (probe ? `<ol class="steps small" style="margin:8px 0 0">
+      <li><a href="${esc(probe)}" target="_blank" rel="noopener">Відкрийте міст у новій вкладці</a> і подивіться, що там:
+        <ul>
+          <li><b>текст із <code>"bridge":"ok"</code></b> — міст працює; якщо там <code>"keyOk":false</code>, скопіюйте код мосту з програми ще раз і оновіть розгортання;</li>
+          <li><b>сторінка входу Google</b> — у розгортанні вибрано не той доступ: «Розгорнути» → «Керувати розгортаннями» → ✎ → «Хто має доступ»: <b>Усі</b> (не «Усі з обліковим записом Google»);</li>
+          <li><b>«Сценарій не знайдено» / помилка або «потрібна авторизація»</b> — у редакторі скрипта натисніть ▶ «Виконати» для doGet і дозвольте доступ, потім створіть нове розгортання;</li>
+          <li><b>помилка «Unknown action» або старий текст</b> — у розгортанні стара версія коду: «Керувати розгортаннями» → ✎ → «Версія»: <b>Нова версія</b> → «Розгорнути».</li>
+        </ul></li></ol>` : "");
 }
 
 function randomKey() {
@@ -51,7 +85,12 @@ async function privatGet(conn, path, params = {}) {
   for (const [k, v] of Object.entries(params)) if (v != null && v !== "") u.searchParams.set(k, v);
   let r;
   try { r = await fetch(u.toString(), { redirect: "follow" }); }
-  catch { throw new Error("Немає зв'язку з мостом ПриватБанку. Перевірте адресу мосту та інтернет."); }
+  catch {
+    if (!navigator.onLine) throw new Error("Немає інтернету.");
+    const err = new Error("Програма не може прочитати відповідь мосту ПриватБанку. Найчастіше причина — у налаштуваннях розгортання в Google (доступ, адреса /exec) або в старій версії коду мосту.");
+    err.bridgeUnreachable = true;
+    throw err;
+  }
   const text = await r.text();
   let data;
   try { data = JSON.parse(text); }
@@ -240,15 +279,23 @@ function initPrivatForm() {
   });
   f.addEventListener("submit", async (e) => {
     e.preventDefault();
-    const url = f.bridge.value.trim();
-    if (!/^https:\/\/script\.google(usercontent)?\.com\/.+/.test(url) && !/^http:\/\/127\.0\.0\.1/.test(url)) {
-      return toast("Вставте адресу веб-застосунку, яка починається з https://script.google.com/macros/s/…", true);
-    }
+    const { url, error } = cleanBridgeUrl(f.bridge.value);
+    if (error) return showBridgeDiag(f, null, key, error);
+    f.bridge.value = url;
     if (S.connections.some((c) => c.bridge_url === url)) return toast("Цей міст уже підключено", true);
     const btn = $("button[type=submit]", f);
-    btn.disabled = true; btn.textContent = "Перевіряю зв'язок з банком…";
+    showBridgeDiag(f, null, key, "");
     const conn = { id: 0, bank: "privat", name: "ПриватБанк", bridge_url: url, bridge_key: key, token: "", owner_name: null, last_sync_at: null, last_error: null, created_at: nowTs() };
     try {
+      // 1) чи відповідає міст (налаштування Google)
+      btn.disabled = true; btn.textContent = "Перевіряю міст…";
+      const ping = await privatGet(conn, "ping").catch((err) => {
+        if (/Недозволений запит/.test(err.message)) return { old: true }; // старий код мосту без ping — перевіримо далі
+        throw err;
+      });
+      if (ping && ping.keyOk === false) throw new Error("Міст відповідає, але ключ у ньому інший. Скопіюйте код мосту з програми ще раз, вставте в редактор і оновіть розгортання (Версія: «Нова версія»).");
+      // 2) чи відповідає банк
+      btn.textContent = "Перевіряю зв'язок з банком…";
       const accounts = await privatAccounts(conn);
       if (!accounts.length) throw new Error("Банк не повернув жодного рахунку. Перевірте, що в налаштуваннях API дозволено «Отримання балансів і транзакцій».");
       conn.id = newId();
@@ -261,7 +308,7 @@ function initPrivatForm() {
       toast(`ПриватБанк підключено, рахунків: ${accounts.length}. Завантажую виписку.` + (files.length ? " Якщо раніше імпортували цей рахунок файлом — видаліть імпорт, щоб не було дублів." : ""));
       loadBanks();
       syncAll(conn.id);
-    } catch (err) { toast(err.message, true); }
+    } catch (err) { showBridgeDiag(f, url, key, err.message); }
     btn.disabled = false; btn.textContent = "Підключити";
   });
 }

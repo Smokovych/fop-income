@@ -138,12 +138,13 @@
                 <textarea id="privat-code" readonly rows="6" style="width:100%;margin-top:6px;font:12px/1.4 ui-monospace,Menlo,monospace"></textarea>
                 <div><button type="button" class="btn" id="btn-copy-code">Скопіювати код</button></div>
               </li>
-              <li><b>Опублікуйте.</b> Угорі праворуч «Розгорнути» (Deploy) → «Нове розгортання» → тип «Веб-застосунок». «Виконувати від імені»: <b>Я</b>; «Хто має доступ»: <b>Усі</b>. Натисніть «Розгорнути» й дозвольте доступ своєму акаунту (Google попередить, що застосунок не перевірено, — це ваш власний скрипт: «Додатково» → «Перейти»).</li>
+              <li><b>Опублікуйте.</b> Угорі праворуч «Розгорнути» (Deploy) → «Нове розгортання» → тип «Веб-застосунок». «Виконувати від імені»: <b>Я</b>; «Хто має доступ»: <b>Усі</b>. Натисніть «Розгорнути» й дозвольте доступ своєму акаунту (Google попередить, що застосунок не перевірено, — це ваш власний скрипт: «Додатково» → «Перейти»). <span class="muted">Якщо змінюєте код уже розгорнутого мосту: «Керувати розгортаннями» → ✎ → «Версія»: «Нова версія» — адреса залишиться та сама.</span></li>
               <li><b>Скопіюйте адресу веб-застосунку</b> (https://script.google.com/macros/s/…/exec) і вставте сюди:
                 <input name="bridge" id="privat-bridge" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off" style="width:100%;margin-top:6px">
               </li>
             </ol>
             <button class="btn primary" type="submit">Підключити</button>
+            <div id="privat-diag" class="warn" style="margin-top:12px" hidden></div>
           </div>
         </form>
 
