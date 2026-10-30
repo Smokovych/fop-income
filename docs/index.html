@@ -238,6 +238,53 @@ form.card.form-grid { display: grid; }
 .badge { display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 4px; border-radius: 9px; background: var(--warn); color: #fff;
   font-size: 11px; line-height: 18px; text-align: center; font-weight: 650; vertical-align: 1px; }
 .badge[hidden] { display: none; }
+
+/* ---------- телефон: фільтри згортаються, операції — картками ---------- */
+.filters-toggle { display: none; }
+@media (max-width: 720px) {
+  .section-head { flex-wrap: wrap; gap: 8px; }
+  #tx-filters { display: grid; grid-template-columns: 1fr auto; gap: 10px; padding: 12px; }
+  #tx-filters > label { display: none; }
+  #tx-filters > label.grow { display: flex; grid-column: 1; grid-row: 1; min-width: 0; }
+  #tx-filters .filters-toggle { display: inline-flex; grid-column: 2; grid-row: 1; align-self: end; }
+  #tx-filters.open { grid-template-columns: 1fr 1fr; }
+  #tx-filters.open > label { display: flex; min-width: 0; }
+  #tx-filters.open > label.grow { grid-column: 1 / -1; grid-row: auto; }
+  #tx-filters.open .filters-toggle { grid-column: 1 / -1; grid-row: auto; order: 10; justify-content: center; }
+  #tx-filters select, #tx-filters input { width: 100%; min-width: 0; }
+
+  .tx-table, .tx-table tbody { display: block; }
+  .tx-table thead { display: none; }
+  .tx-table tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 12px; row-gap: 2px;
+    grid-template-areas: "desc amt" "date inc" "acc comm" "cat cat"; padding: 12px 14px; border-bottom: 1px solid var(--border); }
+  .tx-table tr:last-child { border-bottom: 0; }
+  .tx-table td { display: block; padding: 0; border: 0; min-width: 0; }
+  .tx-table td.desc { grid-area: desc; max-width: none; }
+  .tx-table td.desc .cp { overflow-wrap: anywhere; }
+  .tx-table td.desc .sub { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .tx-table td.td-amt { grid-area: amt; font-weight: 650; font-size: 15px; }
+  .tx-table td.td-date { grid-area: date; font-size: 12px; color: var(--text-2); display: flex; gap: 6px; align-items: baseline; }
+  .tx-table td.td-date .small { margin: 0; }
+  .tx-table td.td-inc { grid-area: inc; font-size: 12px; }
+  .tx-table td.td-inc::before { content: "дохід "; color: var(--muted); }
+  .tx-table td.td-inc.no-inc { display: none; }
+  .tx-table td.td-acc { grid-area: acc; color: var(--muted); font-size: 12px; }
+  .tx-table td.comm-cell { grid-area: comm; font-size: 12px; display: flex; gap: 6px; align-items: baseline; justify-content: flex-end; }
+  .tx-table td.comm-cell::before { content: "комісія"; color: var(--muted); }
+  .tx-table td.comm-cell.empty-cell { display: none; }
+  .tx-table td.comm-cell .muted.small { display: none; }
+  .tx-table td.td-cat { grid-area: cat; margin-top: 8px; }
+  .tx-table td.td-cat select { max-width: none; width: calc(100% - 40px); }
+  .tx-table tr:not(.needs-review) td.td-cat > .muted.small { display: none; }
+  .tx-table tr.needs-review > td { background: none; }
+  .tx-table tr.needs-review { background: var(--warn-bg); box-shadow: inset 4px 0 0 var(--warn); }
+  .tx-table tr.needs-review > td:first-child { box-shadow: none; }
+  .review-box { max-width: none; }
+  .review-actions { display: grid; grid-template-columns: 1fr 1fr; }
+  .review-actions .btn { justify-content: center; padding-top: 10px; padding-bottom: 10px; }
+  .tx-summary { font-size: 13px; }
+  .review-note { margin: 6px 0 0; }
+}
 </style>
 </head>
 <body>
@@ -312,7 +359,8 @@ form.card.form-grid { display: grid; }
           <h2>Операції</h2>
           <a class="btn" id="btn-export" href="#" role="button">Книга обліку доходів (CSV)</a>
         </div>
-        <div class="filters card">
+        <div class="filters card" id="tx-filters">
+          <button type="button" class="btn filters-toggle" id="filters-toggle" aria-expanded="false" aria-controls="tx-filters">Фільтри</button>
           <label>З <input type="date" id="f-from"></label>
           <label>По <input type="date" id="f-to"></label>
           <label>Рахунок <select id="f-account"><option value="">Усі</option></select></label>
@@ -2000,13 +2048,13 @@ function txRow(t) {
   const review = rv ? `<div class="review-box"><div class="small"><b>Потрібне підтвердження.</b> ${esc(rv.reason)}.</div>
       <div class="review-actions"><button class="btn small review-yes">${yesLabel}</button><button class="btn small review-no">${noLabel}</button></div></div>` : "";
   return `<tr data-id="${esc(t.id)}"${rv ? ` class="needs-review"` : ""}>
-    <td>${fmtDate(t.date)}<div class="muted small">${time}${t.hold ? " · в обробці" : ""}</div></td>
+    <td class="td-date">${fmtDate(t.date)}<div class="muted small">${time}${t.hold ? " · в обробці" : ""}</div></td>
     <td class="desc"><div class="cp">${esc(t.counter_name || t.description)}</div><div class="sub">${esc(t.counter_name ? t.description : "")}${t.comment ? " · " + esc(t.comment) : ""}</div></td>
-    <td class="small">${esc(S.accounts[t.account_id].name)}</td>
-    <td class="num ${amt > 0 ? "pos" : "neg"}">${amt > 0 ? "+" : ""}${nf.format(amt)} ${CUR[t.currency] || t.currency}</td>
-    <td class="num comm-cell">${amt > 0 ? commCell(t) : ""}</td>
-    <td class="num">${c === "income" && incomeUah(t) != null ? `<b>${nf.format(incomeUah(t) / 100)}</b>` : `<span class="muted">—</span>`}${t.currency !== "UAH" && t.nbu_rate ? `<div class="muted small">курс ${t.nbu_rate}</div>` : ""}</td>
-    <td><select class="cat ${t.manual_category ? "manual" : ""}" title="${esc(t.manual_category ? "Змінено вручну" : "Авто: " + (t.auto_reason || ""))}">${opts}</select>
+    <td class="small td-acc">${esc(S.accounts[t.account_id].name)}</td>
+    <td class="num td-amt ${amt > 0 ? "pos" : "neg"}">${amt > 0 ? "+" : ""}${nf.format(amt)} ${CUR[t.currency] || t.currency}</td>
+    <td class="num comm-cell${amt > 0 ? "" : " empty-cell"}">${amt > 0 ? commCell(t) : ""}</td>
+    <td class="num td-inc${c === "income" && incomeUah(t) != null ? "" : " no-inc"}">${c === "income" && incomeUah(t) != null ? `<b>${nf.format(incomeUah(t) / 100)}</b>` : `<span class="muted">—</span>`}${t.currency !== "UAH" && t.nbu_rate ? `<div class="muted small">курс ${t.nbu_rate}</div>` : ""}</td>
+    <td class="td-cat"><select class="cat ${t.manual_category ? "manual" : ""}" title="${esc(t.manual_category ? "Змінено вручну" : "Авто: " + (t.auto_reason || ""))}">${opts}</select>
       ${t.manual_category ? `<button class="btn ghost small reset" title="Повернути автоматичну категорію">↺</button>` : ""}
       <div class="muted small">${t.manual_category ? "вручну" : esc(t.auto_reason || "")}</div>${review}</td></tr>`;
 }
@@ -2066,6 +2114,17 @@ $("#tx-table").addEventListener("keydown", (e) => {
   if (e.key === "Escape") loadTransactions("keep");
 });
 let filterTimer;
+$("#filters-toggle").addEventListener("click", () => {
+  const open = $("#tx-filters").classList.toggle("open");
+  $("#filters-toggle").setAttribute("aria-expanded", open);
+  updateFiltersToggle();
+});
+function updateFiltersToggle() {
+  const n = ["#f-from", "#f-to", "#f-account", "#f-category", "#f-direction"].filter((id) => $(id).value).length;
+  const open = $("#tx-filters").classList.contains("open");
+  $("#filters-toggle").textContent = open ? "Сховати фільтри" : n ? `Фільтри · ${n}` : "Фільтри";
+}
+["#f-from", "#f-to", "#f-account", "#f-category", "#f-direction"].forEach((id) => $(id).addEventListener("change", updateFiltersToggle));
 ["#f-from", "#f-to", "#f-account", "#f-category", "#f-direction", "#f-q"].forEach((id) =>
   $(id).addEventListener("input", () => { clearTimeout(filterTimer); filterTimer = setTimeout(() => loadTransactions(true), 200); }));
 $("#btn-more").addEventListener("click", () => { state.txShown += 200; loadTransactions(false); });

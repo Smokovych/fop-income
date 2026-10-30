@@ -984,13 +984,13 @@ function txRow(t) {
   const review = rv ? `<div class="review-box"><div class="small"><b>Потрібне підтвердження.</b> ${esc(rv.reason)}.</div>
       <div class="review-actions"><button class="btn small review-yes">${yesLabel}</button><button class="btn small review-no">${noLabel}</button></div></div>` : "";
   return `<tr data-id="${esc(t.id)}"${rv ? ` class="needs-review"` : ""}>
-    <td>${fmtDate(t.date)}<div class="muted small">${time}${t.hold ? " · в обробці" : ""}</div></td>
+    <td class="td-date">${fmtDate(t.date)}<div class="muted small">${time}${t.hold ? " · в обробці" : ""}</div></td>
     <td class="desc"><div class="cp">${esc(t.counter_name || t.description)}</div><div class="sub">${esc(t.counter_name ? t.description : "")}${t.comment ? " · " + esc(t.comment) : ""}</div></td>
-    <td class="small">${esc(S.accounts[t.account_id].name)}</td>
-    <td class="num ${amt > 0 ? "pos" : "neg"}">${amt > 0 ? "+" : ""}${nf.format(amt)} ${CUR[t.currency] || t.currency}</td>
-    <td class="num comm-cell">${amt > 0 ? commCell(t) : ""}</td>
-    <td class="num">${c === "income" && incomeUah(t) != null ? `<b>${nf.format(incomeUah(t) / 100)}</b>` : `<span class="muted">—</span>`}${t.currency !== "UAH" && t.nbu_rate ? `<div class="muted small">курс ${t.nbu_rate}</div>` : ""}</td>
-    <td><select class="cat ${t.manual_category ? "manual" : ""}" title="${esc(t.manual_category ? "Змінено вручну" : "Авто: " + (t.auto_reason || ""))}">${opts}</select>
+    <td class="small td-acc">${esc(S.accounts[t.account_id].name)}</td>
+    <td class="num td-amt ${amt > 0 ? "pos" : "neg"}">${amt > 0 ? "+" : ""}${nf.format(amt)} ${CUR[t.currency] || t.currency}</td>
+    <td class="num comm-cell${amt > 0 ? "" : " empty-cell"}">${amt > 0 ? commCell(t) : ""}</td>
+    <td class="num td-inc${c === "income" && incomeUah(t) != null ? "" : " no-inc"}">${c === "income" && incomeUah(t) != null ? `<b>${nf.format(incomeUah(t) / 100)}</b>` : `<span class="muted">—</span>`}${t.currency !== "UAH" && t.nbu_rate ? `<div class="muted small">курс ${t.nbu_rate}</div>` : ""}</td>
+    <td class="td-cat"><select class="cat ${t.manual_category ? "manual" : ""}" title="${esc(t.manual_category ? "Змінено вручну" : "Авто: " + (t.auto_reason || ""))}">${opts}</select>
       ${t.manual_category ? `<button class="btn ghost small reset" title="Повернути автоматичну категорію">↺</button>` : ""}
       <div class="muted small">${t.manual_category ? "вручну" : esc(t.auto_reason || "")}</div>${review}</td></tr>`;
 }
@@ -1050,6 +1050,17 @@ $("#tx-table").addEventListener("keydown", (e) => {
   if (e.key === "Escape") loadTransactions("keep");
 });
 let filterTimer;
+$("#filters-toggle").addEventListener("click", () => {
+  const open = $("#tx-filters").classList.toggle("open");
+  $("#filters-toggle").setAttribute("aria-expanded", open);
+  updateFiltersToggle();
+});
+function updateFiltersToggle() {
+  const n = ["#f-from", "#f-to", "#f-account", "#f-category", "#f-direction"].filter((id) => $(id).value).length;
+  const open = $("#tx-filters").classList.contains("open");
+  $("#filters-toggle").textContent = open ? "Сховати фільтри" : n ? `Фільтри · ${n}` : "Фільтри";
+}
+["#f-from", "#f-to", "#f-account", "#f-category", "#f-direction"].forEach((id) => $(id).addEventListener("change", updateFiltersToggle));
 ["#f-from", "#f-to", "#f-account", "#f-category", "#f-direction", "#f-q"].forEach((id) =>
   $(id).addEventListener("input", () => { clearTimeout(filterTimer); filterTimer = setTimeout(() => loadTransactions(true), 200); }));
 $("#btn-more").addEventListener("click", () => { state.txShown += 200; loadTransactions(false); });

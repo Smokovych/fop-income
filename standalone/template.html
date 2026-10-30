@@ -80,7 +80,8 @@
           <h2>Операції</h2>
           <a class="btn" id="btn-export" href="#" role="button">Книга обліку доходів (CSV)</a>
         </div>
-        <div class="filters card">
+        <div class="filters card" id="tx-filters">
+          <button type="button" class="btn filters-toggle" id="filters-toggle" aria-expanded="false" aria-controls="tx-filters">Фільтри</button>
           <label>З <input type="date" id="f-from"></label>
           <label>По <input type="date" id="f-to"></label>
           <label>Рахунок <select id="f-account"><option value="">Усі</option></select></label>
