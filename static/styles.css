@@ -277,3 +277,35 @@ form.card.form-grid { display: grid; }
   .tx-summary { font-size: 13px; }
   .review-note { margin: 6px 0 0; }
 }
+
+/* ---------- облікові дані ---------- */
+.tax-setup.collapsed { display: none; }
+.tax-setup { display: grid; gap: 12px; margin-bottom: 16px; }
+.inline-form { display: flex; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
+.inline-form input { flex: 1; min-width: 140px; }
+dl.kv { display: grid; grid-template-columns: minmax(140px, 32%) 1fr; gap: 6px 16px; margin: 0; }
+dl.kv dt { color: var(--text-2); font-size: 13px; }
+dl.kv dd { margin: 0; overflow-wrap: anywhere; }
+.tax-main { margin-bottom: 16px; }
+.tax-main dl.kv-main dd { font-weight: 550; }
+.tax-main h4 { margin: 16px 0 6px; font-size: 14px; }
+ul.plain { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.tax-groups { display: grid; gap: 8px; }
+.tax-group > summary { cursor: pointer; display: flex; justify-content: space-between; gap: 12px; align-items: baseline; font-weight: 600; list-style: none; }
+.tax-group > summary::-webkit-details-marker { display: none; }
+.tax-group > summary::before { content: "▸"; color: var(--muted); margin-right: 6px; }
+.tax-group[open] > summary::before { content: "▾"; }
+.tax-group > summary > span:first-child { flex: 1; }
+.tax-group[open] > summary { margin-bottom: 12px; }
+.tax-group[data-empty] > summary { color: var(--muted); font-weight: 500; }
+.kv-table td { font-size: 13px; }
+@media (max-width: 720px) {
+  dl.kv { grid-template-columns: 1fr; gap: 0; }
+  dl.kv dt { margin-top: 8px; }
+  .kv-table thead { display: none; }
+  .kv-table, .kv-table tbody, .kv-table tr, .kv-table td { display: block; }
+  .kv-table tr { padding: 8px 0; border-bottom: 1px solid var(--border); }
+  .kv-table td { border: 0; padding: 2px 0; }
+  .kv-table td:empty { display: none; }
+  .kv-table td::before { content: attr(data-label) ": "; color: var(--muted); }
+}

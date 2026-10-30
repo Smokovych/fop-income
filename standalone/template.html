@@ -25,6 +25,7 @@
         <button data-tab="overview" class="active">Огляд</button>
         <button data-tab="transactions">Операції <span class="badge" id="review-badge" title="Надходження, що чекають підтвердження" hidden></span></button>
         <button data-tab="banks">Банки</button>
+        <button data-tab="account">Облікові дані</button>
         <button data-tab="rules">Правила</button>
         <button data-tab="settings">Налаштування</button>
       </nav>
@@ -96,6 +97,58 @@
           <div class="table-wrap"><table class="table tx-table" id="tx-table"></table></div>
           <div class="pager"><button class="btn" id="btn-more">Показати ще</button></div>
         </div>
+      </section>
+
+      <!-- ОБЛІКОВІ ДАНІ -->
+      <section id="tab-account" class="tab hidden">
+        <div class="section-head">
+          <h2>Облікові дані</h2>
+          <div class="conn-actions">
+            <span id="tax-meta" class="muted small"></span>
+            <button class="btn" id="btn-tax-setup" type="button">Підключення</button>
+            <button class="btn primary" id="btn-tax-load" type="button" disabled>Оновити з Кабінету</button>
+          </div>
+        </div>
+        <div id="tax-error" class="warn" hidden></div>
+
+        <div id="tax-setup" class="tax-setup">
+          <p class="muted">Дані беруться з Електронного кабінету платника через його офіційний API. Кабінет пускає лише з кваліфікованим електронним підписом (КЕП), тому потрібні два кроки — один раз.</p>
+          <div class="grid-2">
+            <div class="card">
+              <h3>Крок 1. Підпис</h3>
+              <p class="muted small">Кабінет приймає ваш РНОКПП, підписаний вашим КЕП. Підписуєте ви самі на офіційному сайті ЦЗО — пароль від ключа програма не бачить.</p>
+              <ol class="steps">
+                <li>Вкажіть РНОКПП і завантажте файл для підпису:
+                  <div class="inline-form"><input id="tax-tin" inputmode="numeric" maxlength="10" placeholder="1234567890" autocomplete="off">
+                  <button class="btn" type="button" id="btn-tax-txt">Завантажити файл</button></div></li>
+                <li>Відкрийте <a href="https://czo.gov.ua/sign" target="_blank" rel="noopener">czo.gov.ua/sign</a> → «Файловий» → оберіть файл ключа, введіть пароль і зчитайте ключ.</li>
+                <li>Підпишіть завантажений файл <b>rnokpp-….txt</b>. Якщо сайт пропонує тип підпису — оберіть <b>«дані та підпис в одному файлі»</b> (CAdES, .p7s). Збережіть підписаний файл.</li>
+                <li>Завантажте підписаний файл сюди:
+                  <label class="btn" style="margin-top:6px">Обрати файл .p7s<input type="file" id="tax-sign-file" accept=".p7s,.p7m,.sig,.txt,.pem,application/pkcs7-signature" hidden></label></li>
+              </ol>
+              <p class="small" id="tax-sign-status"></p>
+            </div>
+            <form class="card" id="form-tax-bridge">
+              <h3>Крок 2. Міст до Кабінету</h3>
+              <p class="muted small">Кабінет не відповідає програмам у браузері, тому запити йдуть через невеликий скрипт у вашому Google-акаунті. Він нічого не зберігає і вміє лише читати облікові дані. Це окремий міст — не той, що для ПриватБанку.</p>
+              <ol class="steps">
+                <li>Відкрийте <a href="https://script.google.com/home/projects/create" target="_blank" rel="noopener">script.google.com → Новий проєкт</a>, видаліть усе в редакторі та вставте цей код:
+                  <textarea id="tax-bridge-code" readonly rows="5" style="width:100%;margin-top:6px;font:12px/1.4 ui-monospace,Menlo,monospace"></textarea>
+                  <div><button type="button" class="btn" id="btn-tax-copy">Скопіювати код</button></div></li>
+                <li>«Розгорнути» → «Нове розгортання» → «Веб-застосунок». «Виконувати від імені»: <b>Я</b>; «Хто має доступ»: <b>Усі</b>. Дозвольте доступ своєму акаунту («Додатково» → «Перейти»).</li>
+                <li>Скопіюйте «URL веб-застосунку» (…/exec) і вставте:
+                  <input id="tax-bridge-url" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off" style="width:100%;margin-top:6px"></li>
+              </ol>
+              <button class="btn primary" type="submit">Підключити міст</button>
+              <p class="small" id="tax-bridge-status"></p>
+            </form>
+          </div>
+          <p class="muted small">Підпис зберігається лише в цьому браузері та в резервній копії. Він дає доступ лише до перегляду ваших даних у Кабінеті — зберігайте копію в надійному місці.
+            <button class="btn ghost danger small" type="button" id="btn-tax-forget">Видалити підпис і дані</button></p>
+        </div>
+
+        <div id="tax-summary"></div>
+        <div id="tax-groups" class="tax-groups"></div>
       </section>
 
       <!-- БАНКИ -->

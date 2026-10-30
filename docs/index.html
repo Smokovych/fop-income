@@ -285,6 +285,38 @@ form.card.form-grid { display: grid; }
   .tx-summary { font-size: 13px; }
   .review-note { margin: 6px 0 0; }
 }
+
+/* ---------- облікові дані ---------- */
+.tax-setup.collapsed { display: none; }
+.tax-setup { display: grid; gap: 12px; margin-bottom: 16px; }
+.inline-form { display: flex; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
+.inline-form input { flex: 1; min-width: 140px; }
+dl.kv { display: grid; grid-template-columns: minmax(140px, 32%) 1fr; gap: 6px 16px; margin: 0; }
+dl.kv dt { color: var(--text-2); font-size: 13px; }
+dl.kv dd { margin: 0; overflow-wrap: anywhere; }
+.tax-main { margin-bottom: 16px; }
+.tax-main dl.kv-main dd { font-weight: 550; }
+.tax-main h4 { margin: 16px 0 6px; font-size: 14px; }
+ul.plain { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.tax-groups { display: grid; gap: 8px; }
+.tax-group > summary { cursor: pointer; display: flex; justify-content: space-between; gap: 12px; align-items: baseline; font-weight: 600; list-style: none; }
+.tax-group > summary::-webkit-details-marker { display: none; }
+.tax-group > summary::before { content: "▸"; color: var(--muted); margin-right: 6px; }
+.tax-group[open] > summary::before { content: "▾"; }
+.tax-group > summary > span:first-child { flex: 1; }
+.tax-group[open] > summary { margin-bottom: 12px; }
+.tax-group[data-empty] > summary { color: var(--muted); font-weight: 500; }
+.kv-table td { font-size: 13px; }
+@media (max-width: 720px) {
+  dl.kv { grid-template-columns: 1fr; gap: 0; }
+  dl.kv dt { margin-top: 8px; }
+  .kv-table thead { display: none; }
+  .kv-table, .kv-table tbody, .kv-table tr, .kv-table td { display: block; }
+  .kv-table tr { padding: 8px 0; border-bottom: 1px solid var(--border); }
+  .kv-table td { border: 0; padding: 2px 0; }
+  .kv-table td:empty { display: none; }
+  .kv-table td::before { content: attr(data-label) ": "; color: var(--muted); }
+}
 </style>
 </head>
 <body>
@@ -304,6 +336,7 @@ form.card.form-grid { display: grid; }
         <button data-tab="overview" class="active">Огляд</button>
         <button data-tab="transactions">Операції <span class="badge" id="review-badge" title="Надходження, що чекають підтвердження" hidden></span></button>
         <button data-tab="banks">Банки</button>
+        <button data-tab="account">Облікові дані</button>
         <button data-tab="rules">Правила</button>
         <button data-tab="settings">Налаштування</button>
       </nav>
@@ -375,6 +408,58 @@ form.card.form-grid { display: grid; }
           <div class="table-wrap"><table class="table tx-table" id="tx-table"></table></div>
           <div class="pager"><button class="btn" id="btn-more">Показати ще</button></div>
         </div>
+      </section>
+
+      <!-- ОБЛІКОВІ ДАНІ -->
+      <section id="tab-account" class="tab hidden">
+        <div class="section-head">
+          <h2>Облікові дані</h2>
+          <div class="conn-actions">
+            <span id="tax-meta" class="muted small"></span>
+            <button class="btn" id="btn-tax-setup" type="button">Підключення</button>
+            <button class="btn primary" id="btn-tax-load" type="button" disabled>Оновити з Кабінету</button>
+          </div>
+        </div>
+        <div id="tax-error" class="warn" hidden></div>
+
+        <div id="tax-setup" class="tax-setup">
+          <p class="muted">Дані беруться з Електронного кабінету платника через його офіційний API. Кабінет пускає лише з кваліфікованим електронним підписом (КЕП), тому потрібні два кроки — один раз.</p>
+          <div class="grid-2">
+            <div class="card">
+              <h3>Крок 1. Підпис</h3>
+              <p class="muted small">Кабінет приймає ваш РНОКПП, підписаний вашим КЕП. Підписуєте ви самі на офіційному сайті ЦЗО — пароль від ключа програма не бачить.</p>
+              <ol class="steps">
+                <li>Вкажіть РНОКПП і завантажте файл для підпису:
+                  <div class="inline-form"><input id="tax-tin" inputmode="numeric" maxlength="10" placeholder="1234567890" autocomplete="off">
+                  <button class="btn" type="button" id="btn-tax-txt">Завантажити файл</button></div></li>
+                <li>Відкрийте <a href="https://czo.gov.ua/sign" target="_blank" rel="noopener">czo.gov.ua/sign</a> → «Файловий» → оберіть файл ключа, введіть пароль і зчитайте ключ.</li>
+                <li>Підпишіть завантажений файл <b>rnokpp-….txt</b>. Якщо сайт пропонує тип підпису — оберіть <b>«дані та підпис в одному файлі»</b> (CAdES, .p7s). Збережіть підписаний файл.</li>
+                <li>Завантажте підписаний файл сюди:
+                  <label class="btn" style="margin-top:6px">Обрати файл .p7s<input type="file" id="tax-sign-file" accept=".p7s,.p7m,.sig,.txt,.pem,application/pkcs7-signature" hidden></label></li>
+              </ol>
+              <p class="small" id="tax-sign-status"></p>
+            </div>
+            <form class="card" id="form-tax-bridge">
+              <h3>Крок 2. Міст до Кабінету</h3>
+              <p class="muted small">Кабінет не відповідає програмам у браузері, тому запити йдуть через невеликий скрипт у вашому Google-акаунті. Він нічого не зберігає і вміє лише читати облікові дані. Це окремий міст — не той, що для ПриватБанку.</p>
+              <ol class="steps">
+                <li>Відкрийте <a href="https://script.google.com/home/projects/create" target="_blank" rel="noopener">script.google.com → Новий проєкт</a>, видаліть усе в редакторі та вставте цей код:
+                  <textarea id="tax-bridge-code" readonly rows="5" style="width:100%;margin-top:6px;font:12px/1.4 ui-monospace,Menlo,monospace"></textarea>
+                  <div><button type="button" class="btn" id="btn-tax-copy">Скопіювати код</button></div></li>
+                <li>«Розгорнути» → «Нове розгортання» → «Веб-застосунок». «Виконувати від імені»: <b>Я</b>; «Хто має доступ»: <b>Усі</b>. Дозвольте доступ своєму акаунту («Додатково» → «Перейти»).</li>
+                <li>Скопіюйте «URL веб-застосунку» (…/exec) і вставте:
+                  <input id="tax-bridge-url" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off" style="width:100%;margin-top:6px"></li>
+              </ol>
+              <button class="btn primary" type="submit">Підключити міст</button>
+              <p class="small" id="tax-bridge-status"></p>
+            </form>
+          </div>
+          <p class="muted small">Підпис зберігається лише в цьому браузері та в резервній копії. Він дає доступ лише до перегляду ваших даних у Кабінеті — зберігайте копію в надійному місці.
+            <button class="btn ghost danger small" type="button" id="btn-tax-forget">Видалити підпис і дані</button></p>
+        </div>
+
+        <div id="tax-summary"></div>
+        <div id="tax-groups" class="tax-groups"></div>
       </section>
 
       <!-- БАНКИ -->
@@ -1062,6 +1147,329 @@ function adaptUiForServer() {
   }
 }
 
+// ============================================================ Облікові дані з Електронного кабінету платника
+// API приватної частини ЕК (https://cabinet.tax.gov.ua/help/api-registers-int.html):
+//   GET https://cabinet.tax.gov.ua/ws/public_api/payer_card            — усі блоки облікових даних
+//   GET https://cabinet.tax.gov.ua/ws/public_api/payer_card/{група}?page=0&size=… — блок зі списком
+//   Authorization: РНОКПП, підписаний КЕП внутрішнім підписом з сертифікатом, у BASE64.
+// Кабінет не відповідає сторінкам у браузері (немає CORS), тому запити йдуть через «міст» —
+// скрипт Google Apps Script користувача. Підпис (.p7s) користувач робить сам на czo.gov.ua і
+// завантажує в програму: пароль від ключа програма не бачить. Міст секретів не зберігає —
+// підпис передається в кожному запиті.
+
+const TAX_ALLOWED_HINT = "payer_card, payer_card/{група}";
+
+function taxBridgeCode(key) {
+  return `// Міст ФОП-дохід → Електронний кабінет платника (лише читання облікових даних)
+const ACCESS_KEY = ${JSON.stringify(key)};
+const BASE = 'https://cabinet.tax.gov.ua/ws/public_api/';
+const ALLOWED = /^payer_card(\\/\\d{1,2})?$/;
+const PARAMS = ['page', 'size'];
+
+function doGet(e) {
+  const p = (e && e.parameter) || {};
+  return out_({ status: 'SUCCESS', bridge: 'ok', kind: 'tax', version: 1, keyOk: p.key === ACCESS_KEY });
+}
+
+function doPost(e) {
+  let p;
+  try { p = JSON.parse(e.postData.contents); } catch (err) { return out_({ status: 'ERROR', message: 'Некоректний запит' }); }
+  if (p.key !== ACCESS_KEY) return out_({ status: 'ERROR', message: 'Невірний ключ доступу до мосту. Скопіюйте код мосту з програми ще раз.' });
+  if (!ALLOWED.test(p.path || '')) return out_({ status: 'ERROR', message: 'Недозволений запит' });
+  if (!p.auth) return out_({ status: 'ERROR', message: 'Немає підпису' });
+  const q = PARAMS.filter(function (k) { return p.params && p.params[k] != null; })
+    .map(function (k) { return k + '=' + encodeURIComponent(p.params[k]); }).join('&');
+  let r;
+  try {
+    r = UrlFetchApp.fetch(BASE + p.path + (q ? '?' + q : ''), {
+      method: 'get', muteHttpExceptions: true,
+      headers: { 'Authorization': p.auth, 'Accept': 'application/json', 'Content-Type': 'application/json' }
+    });
+  } catch (err) {
+    return out_({ status: 'ERROR', stage: 'cabinet', message: 'Міст працює, але не зміг з’єднатися з Кабінетом: ' + err });
+  }
+  return out_({ status: 'SUCCESS', http: r.getResponseCode(), body: r.getContentText('UTF-8') });
+}
+
+function out_(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
+}
+`;
+}
+
+// ---------------------------------------------------------------- підпис
+// Приймає .p7s (двійковий DER), base64 або PEM. Повертає { auth, tin } або кидає помилку.
+async function readSignatureFile(file) {
+  const buf = new Uint8Array(await file.arrayBuffer());
+  if (!buf.length) throw new Error("Файл порожній");
+  let b64;
+  if (buf[0] === 0x30) {
+    let s = "";
+    for (let i = 0; i < buf.length; i += 0x8000) s += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+    b64 = btoa(s);
+  } else {
+    const text = new TextDecoder().decode(buf).replace(/-----[^-]+-----/g, "").replace(/\s+/g, "");
+    if (!/^[A-Za-z0-9+/]+=*$/.test(text) || text.length < 200) throw new Error("Це не схоже на файл підпису. Потрібен файл .p7s, отриманий на czo.gov.ua («дані та підпис в одному файлі»).");
+    b64 = text;
+  }
+  const der = atob(b64);
+  if (der.charCodeAt(0) !== 0x30) throw new Error("Файл підпису пошкоджений");
+  // РНОКПП — і в підписаних даних, і в сертифікаті (TINUA-…)
+  const m = der.match(/TINUA-(\d{10})/) || der.match(/(?:^|[^\d])(\d{10})(?!\d)/);
+  return { auth: b64, tin: m ? m[1] : null, size: der.length };
+}
+
+// ---------------------------------------------------------------- запити через міст
+async function taxCall(path, params) {
+  const t = S.tax || {};
+  if (!t.bridge_url) throw new Error("Спершу підключіть міст до Кабінету");
+  if (!t.auth) throw new Error("Спершу завантажте підписаний файл");
+  let r;
+  try {
+    r = await fetch(t.bridge_url, {
+      method: "POST", redirect: "follow",
+      headers: { "Content-Type": "text/plain;charset=utf-8" }, // без попереднього запиту CORS
+      body: JSON.stringify({ key: t.bridge_key, path, params: params || {}, auth: t.auth }),
+    });
+  } catch {
+    const err = new Error("Програма не може прочитати відповідь мосту до Кабінету. Перевірте розгортання в Google: доступ «Усі», адреса /exec, нова версія коду.");
+    err.bridgeUnreachable = true;
+    throw err;
+  }
+  const text = await r.text();
+  let w;
+  try { w = JSON.parse(text); }
+  catch { throw new Error(/<html/i.test(text) ? "Міст відповів сторінкою Google замість даних. У розгортанні оберіть доступ «Усі»." : "Міст повернув некоректну відповідь"); }
+  if (w.status !== "SUCCESS") throw new Error(w.message || "Помилка мосту");
+  if (w.bridge) throw new Error("Це адреса старого мосту або мосту ПриватБанку. Для Кабінету потрібен окремий міст з кодом із цієї вкладки.");
+  let body = null;
+  try { body = w.body ? JSON.parse(w.body) : null; } catch {}
+  if (w.http === 401 || w.http === 403) {
+    const msg = (body && (body.message || body.error_description || body.error)) || (w.body || "").slice(0, 200);
+    throw new Error(`Кабінет не прийняв підпис (HTTP ${w.http})${msg ? ": " + msg : ""}. Можливо, підпис застарів або підписано не той текст — підпишіть файл з РНОКПП ще раз.`);
+  }
+  if (w.http >= 400 || !body) throw new Error(`Кабінет відповів помилкою HTTP ${w.http}: ${(w.body || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").slice(0, 200)}`);
+  return body;
+}
+
+async function taxBridgePing(url, key) {
+  let r;
+  try { r = await fetch(`${url}?path=ping&key=${encodeURIComponent(key)}`, { redirect: "follow" }); }
+  catch { throw new Error("Програма не може прочитати відповідь мосту. Перевірте розгортання в Google: «Хто має доступ» — «Усі», адреса закінчується на /exec."); }
+  const data = await r.json().catch(() => null);
+  if (!data) throw new Error("Міст відповів не тим, що очікувалось. Перевірте, що вставили код мосту саме з цієї вкладки.");
+  if (data.kind !== "tax") throw new Error("Це міст для ПриватБанку або старий код. Для Кабінету створіть окремий міст з кодом із цієї вкладки.");
+  if (data.keyOk === false) throw new Error("Міст відповідає, але ключ у ньому інший. Скопіюйте код мосту з програми ще раз і оновіть розгортання («Нова версія»).");
+}
+
+// Завантажує всі облікові дані; блоки-списки без даних догружає окремо
+async function fetchPayerCard() {
+  const groups = await taxCall("payer_card");
+  if (!Array.isArray(groups)) throw new Error("Кабінет повернув дані в незнайомому форматі");
+  for (const g of groups) {
+    if (g.type === 1 || (Array.isArray(g.listValues) && g.listValues.length)) continue;
+    if (g.values && Object.keys(g.values).length) continue;
+    try {
+      const rows = [];
+      for (let page = 0; page < 20; page++) {
+        const d = await taxCall(`payer_card/${g.idGroup}`, { page, size: 100 });
+        const vals = Array.isArray(d.values) ? d.values : Array.isArray(d.content) ? d.content : [];
+        rows.push(...vals);
+        if (vals.length < 100) break;
+      }
+      g.listValues = rows;
+    } catch (e) { g.loadError = e.message; }
+  }
+  return groups;
+}
+
+// ---------------------------------------------------------------- зведення
+const TAX_FIELDS = {
+  name: [/FULL_NAME/, /^NAME$/, /ПІБ|найменуван/i],
+  tin: [/^TIN$/, /податковий номер|РНОКПП|код/i],
+  address: [/ADR|ADDRESS|MISCE/i, /адрес|місцезнаход|місце прожив/i],
+  sti: [/STI|DPI|NAME_STI/i, /орган ДПС|податков.*орган|ДПІ|контролюючого орган/i],
+};
+
+// Шукає значення в блоці за назвою поля (ключ або підпис у headers)
+function groupValue(g, patterns) {
+  if (!g || !g.values || Array.isArray(g.values)) return null;
+  for (const re of patterns) {
+    for (const [k, v] of Object.entries(g.values)) {
+      if (v == null || v === "") continue;
+      if (re.test(k) || re.test((g.headers || {})[k] || "")) return v;
+    }
+  }
+  return null;
+}
+
+function taxGroups() { return (S.tax && S.tax.card) || []; }
+const taxGroup = (id) => taxGroups().find((g) => g.idGroup === id);
+
+function groupRows(g) {
+  if (!g) return [];
+  if (Array.isArray(g.listValues)) return g.listValues;
+  if (Array.isArray(g.values)) return g.values;
+  return [];
+}
+
+function taxSummary() {
+  const g1 = taxGroup(1), g2 = taxGroup(2), g6 = taxGroup(6), g7 = taxGroup(7), g5 = taxGroup(5), g16 = taxGroup(16);
+  const any = (pats) => groupValue(g1, pats) ?? groupValue(g2, pats);
+  const ep = [];
+  const epSrc = g6 && (g6.values && !Array.isArray(g6.values) ? [g6.values] : groupRows(g6));
+  for (const row of epSrc || []) {
+    const parts = Object.entries(row).filter(([, v]) => v != null && v !== "").map(([k, v]) => `${(g6.headers || {})[k] || k}: ${v}`);
+    if (parts.length) ep.push(parts.join(" · "));
+  }
+  const kved = groupRows(g16).map((r) => {
+    const vals = Object.entries(r).filter(([, v]) => v != null && v !== "");
+    const code = (vals.find(([k, v]) => /KVED|KOD|CODE/i.test(k) || /^\d{2}\.\d{2}$/.test(String(v))) || [])[1];
+    const name = (vals.find(([k]) => /NAME|NAZ/i.test(k)) || [])[1];
+    const main = vals.some(([k, v]) => /MAIN|OSN|IS_?BASIC|PRIZN/i.test(k) && (v === 1 || v === true || /^(1|так|основн)/i.test(String(v))));
+    return { code, name, main, raw: vals };
+  });
+  return {
+    name: any(TAX_FIELDS.name), tin: any(TAX_FIELDS.tin), address: any(TAX_FIELDS.address), sti: any(TAX_FIELDS.sti),
+    ep, kved, vat: g5 && (groupValue(g5, [/.*/]) != null || groupRows(g5).length) ? true : null, esv: g7,
+  };
+}
+
+// ---------------------------------------------------------------- вкладка
+function fmtTaxValue(v) {
+  if (v == null || v === "") return "";
+  if (typeof v === "boolean") return v ? "так" : "ні";
+  return String(v);
+}
+
+function renderGroup(g) {
+  const headers = g.headers || {};
+  let body = "";
+  if (g.values && !Array.isArray(g.values) && Object.keys(g.values).length) {
+    const rows = Object.entries(g.values).filter(([, v]) => v != null && v !== "");
+    body += rows.length ? `<dl class="kv">${rows.map(([k, v]) => `<dt>${esc(headers[k] || k)}</dt><dd>${esc(fmtTaxValue(v))}</dd>`).join("")}</dl>` : "";
+  }
+  const list = groupRows(g);
+  if (list.length) {
+    const cols = [...new Set([...Object.keys(headers).filter((k) => list.some((r) => r[k] != null && r[k] !== "")), ...list.flatMap((r) => Object.keys(r))])]
+      .filter((k) => list.some((r) => r[k] != null && r[k] !== ""));
+    body += `<div class="table-wrap"><table class="table kv-table"><thead><tr>${cols.map((k) => `<th>${esc(headers[k] || k)}</th>`).join("")}</tr></thead>
+      <tbody>${list.map((r) => `<tr>${cols.map((k) => `<td data-label="${esc(headers[k] || k)}">${esc(fmtTaxValue(r[k]))}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+  }
+  if (g.loadError) body += `<p class="error small">Не вдалося завантажити: ${esc(g.loadError)}</p>`;
+  return `<details class="card tax-group" ${body ? "" : "data-empty"}>
+    <summary><span>${esc(g.title || "Блок " + g.idGroup)}</span><span class="muted small">${body ? (list.length ? `записів: ${list.length}` : "") : "немає даних"}</span></summary>
+    ${body || `<p class="muted small">У Кабінеті немає даних цього блоку.</p>`}</details>`;
+}
+
+function loadAccount() {
+  const t = S.tax || {};
+  const hasCard = taxGroups().length > 0;
+  // крок 1-2: підпис і міст
+  // кроки підключення згортаються, коли все працює; при помилці (напр. підпис застарів) — розгортаються
+  $("#tax-setup").classList.toggle("collapsed", !!(hasCard && t.auth && t.bridge_url && !t.last_error));
+  $("#tax-tin").value = $("#tax-tin").value || S.settings.owner_tax_id || "";
+  $("#tax-sign-status").innerHTML = t.auth
+    ? `✓ Підпис завантажено${t.auth_name ? ` (${esc(t.auth_name)})` : ""}${t.auth_tin ? `, РНОКПП ${esc(t.auth_tin)}` : ""}, ${new Date(t.auth_added_at * 1000).toLocaleDateString("uk-UA")}`
+    : "Підпис ще не завантажено";
+  $("#tax-bridge-status").innerHTML = t.bridge_url ? `✓ Міст підключено` : "Міст ще не підключено";
+  if (!t.pending_key) { t.pending_key = randomKey(); S.tax = t; save(); }
+  $("#tax-bridge-code").value = taxBridgeCode(t.bridge_key || t.pending_key);
+  $("#tax-bridge-url").value = t.bridge_url || "";
+  $("#btn-tax-load").disabled = !(t.auth && t.bridge_url);
+  $("#tax-meta").textContent = t.fetched_at ? `Оновлено з Кабінету ${new Date(t.fetched_at * 1000).toLocaleString("uk-UA")}` : "";
+  $("#tax-error").hidden = !t.last_error;
+  $("#tax-error").textContent = t.last_error || "";
+
+  if (!hasCard) { $("#tax-summary").innerHTML = ""; $("#tax-groups").innerHTML = ""; return; }
+  const s = taxSummary();
+  const kv = [["Назва ФОП", s.name], ["Код (РНОКПП)", s.tin], ["Адреса", s.address], ["Податкова", s.sti]].filter(([, v]) => v);
+  const mainK = s.kved.filter((k) => k.main), otherK = s.kved.filter((k) => !k.main);
+  $("#tax-summary").innerHTML = `
+    <div class="card tax-main">
+      <dl class="kv kv-main">${kv.map(([k, v]) => `<dt>${k}</dt><dd>${esc(fmtTaxValue(v))}</dd>`).join("")}</dl>
+      ${s.ep.length ? `<h4>Платник єдиного податку</h4><ul class="plain">${s.ep.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : `<p class="muted small">Даних про реєстрацію платником єдиного податку немає.</p>`}
+      ${s.kved.length ? `<h4>КВЕД</h4><ul class="plain kved">${[...mainK, ...otherK].map((k) => `<li>${k.main ? "<b>" : ""}${esc(k.code || "")} ${esc(k.name || k.raw.map(([, v]) => v).join(" · "))}${k.main ? "</b> <span class=\"muted small\">основний</span>" : ""}</li>`).join("")}</ul>` : ""}
+    </div>`;
+  $("#tax-groups").innerHTML = taxGroups().map(renderGroup).join("");
+}
+
+async function refreshPayerCard() {
+  const btn = $("#btn-tax-load");
+  btn.disabled = true; btn.textContent = "Завантажую з Кабінету…";
+  try {
+    const card = await fetchPayerCard();
+    S.tax.card = card;
+    S.tax.fetched_at = nowTs();
+    S.tax.last_error = null;
+    // ПІБ і РНОКПП потрібні, щоб не рахувати доходом власні перекази
+    const s = taxSummary();
+    const filled = [];
+    if (!S.settings.owner_tax_id && s.tin && /^\d{10}$/.test(String(s.tin))) { S.settings.owner_tax_id = String(s.tin); filled.push("РНОКПП"); }
+    if (!S.settings.owner_name && s.name) { S.settings.owner_name = String(s.name).replace(/^ФОП\s+/i, ""); filled.push("ПІБ"); }
+    if (filled.length) reclassifyAll();
+    log("info", `Облікові дані з Кабінету оновлено, блоків: ${card.length}`);
+    save(true);
+    toast("Облікові дані завантажено" + (filled.length ? `. У Налаштуваннях заповнено: ${filled.join(", ")}` : ""));
+  } catch (e) {
+    S.tax.last_error = e.message; save();
+    toast(e.message, true);
+  }
+  btn.textContent = "Оновити з Кабінету";
+  loadAccount();
+}
+
+function initTaxTab() {
+  if (!S.tax) S.tax = {};
+  $("#btn-tax-txt").addEventListener("click", () => {
+    const tin = $("#tax-tin").value.trim();
+    if (!/^\d{10}$/.test(tin)) return toast("Вкажіть РНОКПП — 10 цифр", true);
+    download(`rnokpp-${tin}.txt`, tin, "text/plain");
+  });
+  $("#tax-sign-file").addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    try {
+      const sig = await readSignatureFile(file);
+      const expected = $("#tax-tin").value.trim() || S.settings.owner_tax_id;
+      Object.assign(S.tax, { auth: sig.auth, auth_name: file.name, auth_tin: sig.tin, auth_added_at: nowTs(), last_error: null });
+      save(true);
+      toast(sig.tin && expected && sig.tin !== expected ? `Увага: у підписі РНОКПП ${sig.tin}, а вказано ${expected}` : "Підпис завантажено");
+      loadAccount();
+      if (S.tax.bridge_url) refreshPayerCard();
+    } catch (err) { toast(err.message, true); }
+    e.target.value = "";
+  });
+  $("#btn-tax-copy").addEventListener("click", async () => {
+    const box = $("#tax-bridge-code");
+    try { await navigator.clipboard.writeText(box.value); toast("Код скопійовано"); }
+    catch { box.focus(); box.select(); toast("Натисніть Cmd+C, щоб скопіювати виділений код"); }
+  });
+  $("#form-tax-bridge").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const { url, error } = cleanBridgeUrl($("#tax-bridge-url").value);
+    if (error) return toast(error, true);
+    const key = S.tax.bridge_key || S.tax.pending_key;
+    const btn = $("button[type=submit]", e.target);
+    btn.disabled = true; btn.textContent = "Перевіряю міст…";
+    try {
+      await taxBridgePing(url, key);
+      Object.assign(S.tax, { bridge_url: url, bridge_key: key, last_error: null });
+      save(true);
+      toast("Міст до Кабінету підключено");
+      loadAccount();
+      if (S.tax.auth) refreshPayerCard();
+    } catch (err) { S.tax.last_error = err.message; save(); loadAccount(); toast(err.message, true); }
+    btn.disabled = false; btn.textContent = "Підключити міст";
+  });
+  $("#btn-tax-load").addEventListener("click", refreshPayerCard);
+  $("#btn-tax-setup").addEventListener("click", () => $("#tax-setup").classList.toggle("collapsed"));
+  $("#btn-tax-forget").addEventListener("click", () => {
+    if (!confirm("Видалити з програми підпис і облікові дані? Міст у Google залишиться — його можна видалити на script.google.com.")) return;
+    S.tax = { pending_key: randomKey() }; save(true); loadAccount(); toast("Підпис і облікові дані видалено");
+  });
+}
+
 "use strict";
 /* ФОП-дохід — версія, що працює повністю в браузері.
    Monobank і курси НБУ — напряму через їхні API; ПриватБанк — через міст або сервер; інші — імпорт файлу виписки.
@@ -1158,7 +1566,7 @@ function freshState() {
     settings: { owner_name: "", owner_tax_id: "", sync_start: `${new Date().getFullYear()}-01-01`, esv_enabled: true },
     taxParams: JSON.parse(JSON.stringify(DEFAULT_TAX)),
     connections: [], accounts: {}, tx: {}, rules: DEFAULT_RULES.map(({ since, ...r }) => r), rulesVersion: RULES_VERSION,
-    rates: {}, log: [], nextId: 100,
+    rates: {}, log: [], nextId: 100, tax: {},
   };
 }
 
@@ -1894,7 +2302,7 @@ function download(filename, text, type) {
 }
 
 const state = { year: new Date().getFullYear(), txShown: 100 };
-const loaders = { overview: loadOverview, transactions: () => loadTransactions(true), banks: loadBanks, rules: loadRules, settings: loadSettings };
+const loaders = { overview: loadOverview, transactions: () => loadTransactions(true), banks: loadBanks, account: loadAccount, rules: loadRules, settings: loadSettings };
 let activeTab = "overview";
 
 function openTab(name) {
@@ -1904,7 +2312,7 @@ function openTab(name) {
   try { history.replaceState(null, "", "#" + name); } catch {}
   loaders[name]();
 }
-function refreshActive() { updateReviewBadge(); if (activeTab !== "settings" && activeTab !== "rules") loaders[activeTab](); }
+function refreshActive() { updateReviewBadge(); if (!["settings", "rules", "account"].includes(activeTab)) loaders[activeTab](); }
 $("#tabs").addEventListener("click", (e) => { const b = e.target.closest("button[data-tab]"); if (b) openTab(b.dataset.tab); });
 
 // ============================================================ огляд
@@ -2343,6 +2751,7 @@ $("#rule-category").innerHTML = catOpts;
 openTab((location.hash.slice(1) in loaders) ? location.hash.slice(1) : "overview");
 addEventListener("hashchange", () => { const t = location.hash.slice(1); if (t in loaders && t !== activeTab) openTab(t); });
 initPrivatForm();
+initTaxTab();
 setStatus("");
 renderBanner();
 if (S.connections.length) setTimeout(() => syncAll(), 500);

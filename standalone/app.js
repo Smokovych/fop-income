@@ -94,7 +94,7 @@ function freshState() {
     settings: { owner_name: "", owner_tax_id: "", sync_start: `${new Date().getFullYear()}-01-01`, esv_enabled: true },
     taxParams: JSON.parse(JSON.stringify(DEFAULT_TAX)),
     connections: [], accounts: {}, tx: {}, rules: DEFAULT_RULES.map(({ since, ...r }) => r), rulesVersion: RULES_VERSION,
-    rates: {}, log: [], nextId: 100,
+    rates: {}, log: [], nextId: 100, tax: {},
   };
 }
 
@@ -830,7 +830,7 @@ function download(filename, text, type) {
 }
 
 const state = { year: new Date().getFullYear(), txShown: 100 };
-const loaders = { overview: loadOverview, transactions: () => loadTransactions(true), banks: loadBanks, rules: loadRules, settings: loadSettings };
+const loaders = { overview: loadOverview, transactions: () => loadTransactions(true), banks: loadBanks, account: loadAccount, rules: loadRules, settings: loadSettings };
 let activeTab = "overview";
 
 function openTab(name) {
@@ -840,7 +840,7 @@ function openTab(name) {
   try { history.replaceState(null, "", "#" + name); } catch {}
   loaders[name]();
 }
-function refreshActive() { updateReviewBadge(); if (activeTab !== "settings" && activeTab !== "rules") loaders[activeTab](); }
+function refreshActive() { updateReviewBadge(); if (!["settings", "rules", "account"].includes(activeTab)) loaders[activeTab](); }
 $("#tabs").addEventListener("click", (e) => { const b = e.target.closest("button[data-tab]"); if (b) openTab(b.dataset.tab); });
 
 // ============================================================ огляд
@@ -1279,6 +1279,7 @@ $("#rule-category").innerHTML = catOpts;
 openTab((location.hash.slice(1) in loaders) ? location.hash.slice(1) : "overview");
 addEventListener("hashchange", () => { const t = location.hash.slice(1); if (t in loaders && t !== activeTab) openTab(t); });
 initPrivatForm();
+initTaxTab();
 setStatus("");
 renderBanner();
 if (S.connections.length) setTimeout(() => syncAll(), 500);
