@@ -1,0 +1,21 @@
+# Render Blueprint: New → Blueprint → репозиторій fop-income.
+# Render створить веб-сервіс з Dockerfile, постійний диск для бази і попросить ввести APP_PASSWORD.
+services:
+  - type: web
+    name: fop-income
+    runtime: docker
+    region: frankfurt          # найближчий до України; змінити після створення не можна
+    # план не вказано — Render бере найменший платний (0.5 CPU, 512 МБ); безкоштовний не підтримує диск
+    healthCheckPath: /api/me
+    autoDeployTrigger: commit  # оновлюється після кожного коміту в main
+    envVars:
+      - key: APP_PASSWORD
+        sync: false            # Render попросить ввести пароль при створенні
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DATA_DIR
+        value: /data
+    disk:
+      name: fop-data
+      mountPath: /data
+      sizeGB: 1
