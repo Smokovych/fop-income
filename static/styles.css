@@ -218,3 +218,15 @@ form.card.form-grid { display: grid; }
 .comm-btn.manual { border-color: var(--accent); border-style: solid; }
 .comm-input { width: 90px; text-align: right; padding: 4px 6px; }
 .comm-btn.empty { color: var(--muted); opacity: .6; }
+
+/* операції, що чекають підтвердження */
+.tx-table tr.needs-review > td { background: var(--warn-bg); }
+.tx-table tr.needs-review > td:first-child { box-shadow: inset 4px 0 0 var(--warn); }
+.review-box { margin-top: 8px; display: grid; gap: 6px; max-width: 260px; }
+.review-box b { color: var(--warn); }
+.review-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.review-note { display: inline-block; margin-left: 6px; padding: 2px 8px; border-radius: 8px; background: var(--warn-bg); color: var(--warn); }
+.review-hint { border-left: 4px solid var(--warn); }
+.badge { display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 4px; border-radius: 9px; background: var(--warn); color: #fff;
+  font-size: 11px; line-height: 18px; text-align: center; font-weight: 650; vertical-align: 1px; }
+.badge[hidden] { display: none; }

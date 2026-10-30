@@ -226,6 +226,18 @@ form.card.form-grid { display: grid; }
 .comm-btn.manual { border-color: var(--accent); border-style: solid; }
 .comm-input { width: 90px; text-align: right; padding: 4px 6px; }
 .comm-btn.empty { color: var(--muted); opacity: .6; }
+
+/* операції, що чекають підтвердження */
+.tx-table tr.needs-review > td { background: var(--warn-bg); }
+.tx-table tr.needs-review > td:first-child { box-shadow: inset 4px 0 0 var(--warn); }
+.review-box { margin-top: 8px; display: grid; gap: 6px; max-width: 260px; }
+.review-box b { color: var(--warn); }
+.review-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.review-note { display: inline-block; margin-left: 6px; padding: 2px 8px; border-radius: 8px; background: var(--warn-bg); color: var(--warn); }
+.review-hint { border-left: 4px solid var(--warn); }
+.badge { display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 4px; border-radius: 9px; background: var(--warn); color: #fff;
+  font-size: 11px; line-height: 18px; text-align: center; font-weight: 650; vertical-align: 1px; }
+.badge[hidden] { display: none; }
 </style>
 </head>
 <body>
@@ -243,7 +255,7 @@ form.card.form-grid { display: grid; }
       <div class="brand"><span class="logo">₴</span> ФОП-дохід</div>
       <nav class="tabs" id="tabs">
         <button data-tab="overview" class="active">Огляд</button>
-        <button data-tab="transactions">Операції</button>
+        <button data-tab="transactions">Операції <span class="badge" id="review-badge" title="Надходження, що чекають підтвердження" hidden></span></button>
         <button data-tab="banks">Банки</button>
         <button data-tab="rules">Правила</button>
         <button data-tab="settings">Налаштування</button>
@@ -265,6 +277,11 @@ form.card.form-grid { display: grid; }
         <div id="empty-hint" class="card hint hidden">
           <strong>Почніть з підключення банку.</strong>
           Перейдіть на вкладку «Банки»: додайте токен Monobank (виписка підтягуватиметься автоматично) або завантажте файл виписки ПриватБанку.
+        </div>
+        <div id="review-hint" class="card hint review-hint hidden">
+          <strong>Перевірте надходження: <span id="review-count"></span>.</strong>
+          Деякі надходження можуть не бути доходом ФОП — повернення, допомога, перекази між вашими рахунками, роялті тощо.
+          <a href="#transactions">Відкрийте «Операції»</a> — вони вгорі списку, підсвічені жовтим. Поки не підтверджено, вони рахуються за автоматичною категорією.
         </div>
         <div class="kpis" id="kpis"></div>
         <div class="card">
@@ -1193,6 +1210,72 @@ function reclassifyAll() {
 }
 
 const catOf = (t) => t.manual_category || t.auto_category;
+
+// ---------------------------------------------------------------- операції, що потребують підтвердження
+// Надходження на рахунок ФОП, які не на 100% є доходом: програма просить користувача вирішити.
+// Рішення зберігається в t.reviewed (і за потреби — у manual_category); ручна зміна категорії теж є рішенням.
+const REVIEW_BY_CATEGORY = {
+  own_transfer: "Схоже на переказ між вашими рахунками",
+  refund_in: "Схоже на повернення коштів",
+  loan: "Схоже на позику / поворотну фінансову допомогу",
+  tax_refund: "Схоже на повернення податку",
+  other_non_income: "Надходження не віднесено до доходу",
+};
+// Слова в описі, через які надходження з категорією «Дохід» варто перевірити: [шаблон, пояснення, категорія «не дохід»]
+const REVIEW_KEYWORDS = [
+  ["роялті", "Роялті", "other_non_income"],
+  ["допомог", "Схоже на допомогу", "loan"],
+  ["матеріальн", "Схоже на матеріальну допомогу", "other_non_income"],
+  ["благодійн", "Схоже на благодійний внесок", "other_non_income"],
+  ["грант", "Схоже на грант", "other_non_income"],
+  ["повернен", "Схоже на повернення коштів", "refund_in"],
+  ["відшкодув", "Схоже на відшкодування", "refund_in"],
+  ["компенсац", "Схоже на компенсацію", "refund_in"],
+  ["позик", "Схоже на позику", "loan"],
+  ["позичк", "Схоже на позику", "loan"],
+  ["поворотн", "Схоже на поворотну допомогу", "loan"],
+  ["кредит", "Схоже на кредит", "loan"],
+  ["зарплат", "Схоже на заробітну плату", "other_non_income"],
+  ["заробітн", "Схоже на заробітну плату", "other_non_income"],
+  ["дивіденд", "Схоже на дивіденди", "other_non_income"],
+  ["відсотк", "Схоже на відсотки банку", "other_non_income"],
+  ["депозит", "Схоже на депозит", "other_non_income"],
+  ["кешбек", "Схоже на кешбек", "other_non_income"],
+  ["cashback", "Схоже на кешбек", "other_non_income"],
+  ["страхов", "Схоже на страхову виплату", "other_non_income"],
+  ["поповнення", "Поповнення рахунку — перевірте, чи це оплата від клієнта", "own_transfer"],
+  ["переказ з картки", "Переказ з картки — перевірте, чи це оплата від клієнта", "own_transfer"],
+  ["переказ коштів", "Переказ коштів — перевірте, чи це оплата від клієнта", "own_transfer"],
+  ["власн", "Схоже на власні кошти", "own_transfer"],
+];
+
+const ACQUIRING_HINTS = ["еквайринг", "операції з пк", "операцій з пк", "операції з платіжн", "операціями з платіжн", "відшкодування за операц", "торговельн", "термінал"];
+
+// Повертає { reason, alt } для операції, що чекає рішення, або null
+function reviewInfo(t) {
+  if (t.reviewed || t.manual_category) return null;
+  const acc = S.accounts[t.account_id];
+  if (!acc || !acc.is_fop) return null;
+  if (t.amount < 0) return t.auto_category === "refund_to_buyer" ? { reason: "Повернення покупцю зменшує дохід", alt: "expense" } : null;
+  if (REVIEW_BY_CATEGORY[t.auto_category]) return { reason: REVIEW_BY_CATEGORY[t.auto_category], alt: "income" };
+  if (t.auto_category !== "income") return null;
+  const hay = norm([t.description, t.comment, t.counter_name].join(" "));
+  // виплати еквайрингу («Відшкодування за операції з ПК…», з утриманою комісією) — звичайний дохід, не питаємо
+  if (t.commission_auto > 0 || ACQUIRING_HINTS.some((h) => hay.includes(norm(h)))) return null;
+  for (const [pat, reason, alt] of REVIEW_KEYWORDS) if (hay.includes(norm(pat))) return { reason, alt };
+  return null;
+}
+const needsReview = (t) => !!reviewInfo(t);
+function pendingReviewCount() {
+  let n = 0;
+  for (const t of Object.values(S.tx)) if (needsReview(t)) n++;
+  return n;
+}
+function updateReviewBadge() {
+  const n = pendingReviewCount(), b = $("#review-badge");
+  if (b) { b.textContent = n; b.hidden = !n; }
+  return n;
+}
 // Комісія еквайрингу (у валюті рахунку, копійки): ручна має пріоритет над знайденою в призначенні
 const commissionOf = (t) => (t.amount > 0 ? (t.commission_manual ?? t.commission_auto ?? 0) : 0);
 // Дохід у гривні = (надійшло на рахунок + утримана комісія) × курс НБУ; лише для категорії «Дохід»
@@ -1773,8 +1856,8 @@ function openTab(name) {
   try { history.replaceState(null, "", "#" + name); } catch {}
   loaders[name]();
 }
-function refreshActive() { if (activeTab !== "settings" && activeTab !== "rules") loaders[activeTab](); }
-$("#tabs").addEventListener("click", (e) => { if (e.target.dataset.tab) openTab(e.target.dataset.tab); });
+function refreshActive() { updateReviewBadge(); if (activeTab !== "settings" && activeTab !== "rules") loaders[activeTab](); }
+$("#tabs").addEventListener("click", (e) => { const b = e.target.closest("button[data-tab]"); if (b) openTab(b.dataset.tab); });
 
 // ============================================================ огляд
 function loadOverview() {
@@ -1782,6 +1865,9 @@ function loadOverview() {
   const years = new Set([new Date().getFullYear(), state.year, ...Object.values(S.tx).map((t) => +t.date.slice(0, 4))]);
   $("#year-select").innerHTML = [...years].sort((a, b) => b - a).map((y) => `<option ${y === state.year ? "selected" : ""}>${y}</option>`).join("");
   $("#empty-hint").classList.toggle("hidden", Object.keys(S.accounts).length > 0);
+  const pend = updateReviewBadge();
+  $("#review-hint").classList.toggle("hidden", !pend);
+  $("#review-count").textContent = pend;
 
   const isCur = state.year === new Date().getFullYear();
   const q = s.quarters[(isCur ? Math.floor(new Date().getMonth() / 3) + 1 : 4) - 1];
@@ -1872,9 +1958,11 @@ function filteredTx() {
   const f = { from: $("#f-from").value, to: $("#f-to").value, acc: $("#f-account").value, cat: $("#f-category").value, dir: $("#f-direction").value, q: norm($("#f-q").value) };
   return Object.values(S.tx).filter((t) => S.accounts[t.account_id]
     && (!f.from || t.date >= f.from) && (!f.to || t.date <= f.to) && (!f.acc || t.account_id === f.acc)
-    && (!f.cat || catOf(t) === f.cat) && (f.dir !== "in" || t.amount > 0) && (f.dir !== "out" || t.amount < 0)
+    && (!f.cat || (f.cat === "__review" ? needsReview(t) : catOf(t) === f.cat)) && (f.dir !== "in" || t.amount > 0) && (f.dir !== "out" || t.amount < 0)
     && (!f.q || norm([t.description, t.counter_name, t.comment, t.note].join(" ")).includes(f.q)))
-    .sort((a, b) => b.ts - a.ts);
+    .map((t) => [needsReview(t), t])
+    .sort(([ra, a], [rb, b]) => (rb - ra) || (b.ts - a.ts)) // спершу ті, що чекають підтвердження
+    .map(([, t]) => t);
 }
 
 function loadTransactions(reset) {
@@ -1886,7 +1974,10 @@ function loadTransactions(reset) {
   const inc = all.filter((t) => catOf(t) === "income");
   const income = inc.reduce((a, t) => a + (incomeUah(t) || 0), 0);
   const comm = inc.reduce((a, t) => a + Math.round(commissionOf(t) * (t.nbu_rate || 1)), 0);
-  $("#tx-summary").textContent = `Знайдено операцій: ${all.length}. Дохід серед них: ${money(income / 100)}` + (comm ? `, у т.ч. комісія еквайрингу ${money(comm / 100)}` : "");
+  const pending = all.filter(needsReview).length;
+  $("#tx-summary").innerHTML = esc(`Знайдено операцій: ${all.length}. Дохід серед них: ${money(income / 100)}` + (comm ? `, у т.ч. комісія еквайрингу ${money(comm / 100)}` : ""))
+    + (pending ? ` <span class="review-note">Чекають підтвердження: <b>${pending}</b> — вони вгорі списку й підсвічені жовтим.</span>` : "");
+  updateReviewBadge();
   const rows = all.slice(0, state.txShown).map(txRow).join("");
   $("#tx-table").innerHTML = `<thead><tr><th>Дата</th><th>Контрагент / призначення</th><th>Рахунок</th><th class="num">Надійшло / списано</th><th class="num" title="Комісія еквайрингу, утримана банком. Береться з призначення платежу; клацніть, щоб змінити">Комісія</th><th class="num" title="Надійшло + комісія, у гривні за курсом НБУ. Ця сума йде в Книгу обліку доходів і декларацію">Дохід, грн</th><th>Категорія</th></tr></thead>
     <tbody>${rows || `<tr><td colspan="7" class="muted">Операцій немає</td></tr>`}</tbody>`;
@@ -1903,7 +1994,12 @@ function txRow(t) {
   const amt = t.amount / 100, c = catOf(t);
   const opts = Object.entries(CATEGORIES).map(([k, v]) => `<option value="${k}" ${k === c ? "selected" : ""}>${esc(v)}</option>`).join("");
   const time = new Date(t.ts * 1000).toLocaleTimeString("uk-UA", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Kyiv" });
-  return `<tr data-id="${esc(t.id)}">
+  const rv = reviewInfo(t);
+  const yesLabel = t.amount < 0 ? "Так, повернення покупцю" : "Це дохід";
+  const noLabel = t.amount < 0 ? "Ні, звичайна витрата" : "Не дохід";
+  const review = rv ? `<div class="review-box"><div class="small"><b>Потрібне підтвердження.</b> ${esc(rv.reason)}.</div>
+      <div class="review-actions"><button class="btn small review-yes">${yesLabel}</button><button class="btn small review-no">${noLabel}</button></div></div>` : "";
+  return `<tr data-id="${esc(t.id)}"${rv ? ` class="needs-review"` : ""}>
     <td>${fmtDate(t.date)}<div class="muted small">${time}${t.hold ? " · в обробці" : ""}</div></td>
     <td class="desc"><div class="cp">${esc(t.counter_name || t.description)}</div><div class="sub">${esc(t.counter_name ? t.description : "")}${t.comment ? " · " + esc(t.comment) : ""}</div></td>
     <td class="small">${esc(S.accounts[t.account_id].name)}</td>
@@ -1912,16 +2008,33 @@ function txRow(t) {
     <td class="num">${c === "income" && incomeUah(t) != null ? `<b>${nf.format(incomeUah(t) / 100)}</b>` : `<span class="muted">—</span>`}${t.currency !== "UAH" && t.nbu_rate ? `<div class="muted small">курс ${t.nbu_rate}</div>` : ""}</td>
     <td><select class="cat ${t.manual_category ? "manual" : ""}" title="${esc(t.manual_category ? "Змінено вручну" : "Авто: " + (t.auto_reason || ""))}">${opts}</select>
       ${t.manual_category ? `<button class="btn ghost small reset" title="Повернути автоматичну категорію">↺</button>` : ""}
-      <div class="muted small">${t.manual_category ? "вручну" : esc(t.auto_reason || "")}</div></td></tr>`;
+      <div class="muted small">${t.manual_category ? "вручну" : esc(t.auto_reason || "")}</div>${review}</td></tr>`;
 }
 
 $("#tx-table").addEventListener("change", (e) => {
   if (!e.target.classList.contains("cat")) return;
   const t = S.tx[e.target.closest("tr").dataset.id];
   t.manual_category = e.target.value;
-  save(); toast("Категорію змінено"); loadTransactions("keep");
+  t.reviewed = true;
+  save(true); toast("Категорію змінено"); loadTransactions("keep");
 });
+// Рішення по операції, що чекала підтвердження: «так» = доходом є (або для списання — це повернення покупцю)
+function resolveReview(t, isIncome) {
+  const rv = reviewInfo(t);
+  if (!rv) return;
+  const incomeSide = t.amount < 0 ? "refund_to_buyer" : "income";
+  const target = isIncome ? incomeSide : (t.auto_category === incomeSide ? rv.alt : t.auto_category);
+  t.manual_category = target === t.auto_category ? null : target;
+  t.reviewed = true;
+  save(true);
+  toast(isIncome ? (t.amount < 0 ? "Підтверджено: повернення покупцю" : "Підтверджено: дохід") : `Не дохід: ${CATEGORIES[target]}. Категорію можна змінити у списку.`);
+  loadTransactions("keep");
+}
+
 $("#tx-table").addEventListener("click", (e) => {
+  if (e.target.classList.contains("review-yes") || e.target.classList.contains("review-no")) {
+    return resolveReview(S.tx[e.target.closest("tr").dataset.id], e.target.classList.contains("review-yes"));
+  }
   const cb = e.target.closest(".comm-btn");
   if (cb) {
     const td = cb.closest("td"), t = S.tx[td.closest("tr").dataset.id];
@@ -2166,7 +2279,7 @@ if (S.commissionParser !== COMMISSION_PARSER_VERSION) {
   save(true);
 }
 const catOpts = Object.entries(CATEGORIES).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("");
-$("#f-category").innerHTML = `<option value="">Усі</option>` + catOpts;
+$("#f-category").innerHTML = `<option value="">Усі</option><option value="__review">Чекають підтвердження</option>` + catOpts;
 $("#rule-category").innerHTML = catOpts;
 openTab((location.hash.slice(1) in loaders) ? location.hash.slice(1) : "overview");
 addEventListener("hashchange", () => { const t = location.hash.slice(1); if (t in loaders && t !== activeTab) openTab(t); });

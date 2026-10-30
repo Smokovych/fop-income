@@ -23,7 +23,7 @@
       <div class="brand"><span class="logo">₴</span> ФОП-дохід</div>
       <nav class="tabs" id="tabs">
         <button data-tab="overview" class="active">Огляд</button>
-        <button data-tab="transactions">Операції</button>
+        <button data-tab="transactions">Операції <span class="badge" id="review-badge" title="Надходження, що чекають підтвердження" hidden></span></button>
         <button data-tab="banks">Банки</button>
         <button data-tab="rules">Правила</button>
         <button data-tab="settings">Налаштування</button>
@@ -45,6 +45,11 @@
         <div id="empty-hint" class="card hint hidden">
           <strong>Почніть з підключення банку.</strong>
           Перейдіть на вкладку «Банки»: додайте токен Monobank (виписка підтягуватиметься автоматично) або завантажте файл виписки ПриватБанку.
+        </div>
+        <div id="review-hint" class="card hint review-hint hidden">
+          <strong>Перевірте надходження: <span id="review-count"></span>.</strong>
+          Деякі надходження можуть не бути доходом ФОП — повернення, допомога, перекази між вашими рахунками, роялті тощо.
+          <a href="#transactions">Відкрийте «Операції»</a> — вони вгорі списку, підсвічені жовтим. Поки не підтверджено, вони рахуються за автоматичною категорією.
         </div>
         <div class="kpis" id="kpis"></div>
         <div class="card">
