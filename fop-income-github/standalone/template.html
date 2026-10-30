@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ФОП-дохід</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232a78d6'/%3E%3Ctext x='16' y='22' font-size='17' text-anchor='middle' fill='white' font-family='sans-serif' font-weight='700'%3E₴%3C/text%3E%3C/svg%3E">
+  <style>/*CSS*/</style>
+</head>
+<body>
+  <div id="app">
+    <header class="topbar">
+      <div class="brand"><span class="logo">₴</span> ФОП-дохід</div>
+      <nav class="tabs" id="tabs">
+        <button data-tab="overview" class="active">Огляд</button>
+        <button data-tab="transactions">Операції</button>
+        <button data-tab="banks">Банки</button>
+        <button data-tab="rules">Правила</button>
+        <button data-tab="settings">Налаштування</button>
+      </nav>
+      <div class="topbar-right">
+        <span id="sync-indicator" class="sync-indicator"></span>
+        <button class="btn" id="btn-sync-all" title="Оновити виписки з усіх банків">Оновити</button>
+      </div>
+    </header>
+    <div id="sync-banner" class="banner hidden" role="status"></div>
+
+    <main>
+      <!-- ОГЛЯД -->
+      <section id="tab-overview" class="tab">
+        <div class="section-head">
+          <h2>Дохід і податки</h2>
+          <select id="year-select" aria-label="Рік"></select>
+        </div>
+        <div id="empty-hint" class="card hint hidden">
+          <strong>Почніть з підключення банку.</strong>
+          Перейдіть на вкладку «Банки»: додайте токен Monobank (виписка підтягуватиметься автоматично) або завантажте файл виписки ПриватБанку.
+        </div>
+        <div class="kpis" id="kpis"></div>
+        <div class="card">
+          <div class="card-head"><h3>Ліміт доходу 3 групи</h3><span id="limit-text" class="muted"></span></div>
+          <div class="limit-bar"><div id="limit-fill"></div></div>
+          <p id="limit-warn" class="warn hidden"></p>
+        </div>
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-head"><h3>Дохід по місяцях, грн</h3></div>
+            <div id="chart" class="chart"></div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h3>Найближчі строки</h3></div>
+            <ul id="upcoming" class="upcoming"></ul>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>По кварталах</h3><span class="muted small">Податки розраховано автоматично; перевіряйте з бухгалтером</span></div>
+          <div class="table-wrap"><table class="table" id="quarters"></table></div>
+        </div>
+        <p id="missing-rates" class="warn hidden"></p>
+      </section>
+
+      <!-- ОПЕРАЦІЇ -->
+      <section id="tab-transactions" class="tab hidden">
+        <div class="section-head">
+          <h2>Операції</h2>
+          <a class="btn" id="btn-export" href="#" role="button">Книга обліку доходів (CSV)</a>
+        </div>
+        <div class="filters card">
+          <label>З <input type="date" id="f-from"></label>
+          <label>По <input type="date" id="f-to"></label>
+          <label>Рахунок <select id="f-account"><option value="">Усі</option></select></label>
+          <label>Категорія <select id="f-category"><option value="">Усі</option></select></label>
+          <label>Напрям
+            <select id="f-direction"><option value="">Усі</option><option value="in">Надходження</option><option value="out">Списання</option></select>
+          </label>
+          <label class="grow">Пошук <input type="search" id="f-q" placeholder="Контрагент, призначення…"></label>
+        </div>
+        <div class="tx-summary" id="tx-summary"></div>
+        <div class="card flush">
+          <div class="table-wrap"><table class="table tx-table" id="tx-table"></table></div>
+          <div class="pager"><button class="btn" id="btn-more">Показати ще</button></div>
+        </div>
+      </section>
+
+      <!-- БАНКИ -->
+      <section id="tab-banks" class="tab hidden">
+        <div class="section-head"><h2>Підключені банки</h2></div>
+        <div id="connections"></div>
+
+        <div class="grid-2">
+          <form class="card" id="form-mono">
+            <h3>Monobank — автоматично через API</h3>
+            <ol class="steps">
+              <li>Відкрийте <a href="https://api.monobank.ua/" target="_blank" rel="noopener">api.monobank.ua</a> і відскануйте QR-код у застосунку monobank.</li>
+              <li>Скопіюйте персональний токен і вставте нижче.</li>
+            </ol>
+            <input name="token" placeholder="Токен Monobank" required autocomplete="off">
+            <button class="btn primary" type="submit">Підключити</button>
+            <p class="muted small">Monobank дозволяє 1 запит виписки на хвилину, тому перше завантаження за рік триває ~12–15 хв. Не закривайте вкладку, поки йде завантаження. Далі виписка оновлюється при кожному відкритті програми та щогодини, поки вона відкрита.</p>
+          </form>
+          <form class="card" id="form-import">
+            <h3>Інші банки — файл виписки</h3>
+            <ol class="steps">
+              <li>У інтернет-банку вивантажте виписку рахунку ФОП за потрібний період у форматі <b>Excel</b> або <b>CSV</b>.</li>
+              <li>Оберіть файл нижче. Повторне завантаження того ж періоду не створює дублів.</li>
+            </ol>
+            <label class="small muted">Рахунок
+              <input name="account" placeholder="напр. Ощадбанк ФОП UAH" required value="">
+            </label>
+            <input type="file" name="file" accept=".csv,.xlsx,.xls,.txt" required>
+            <button class="btn primary" type="submit">Імпортувати</button>
+          </form>
+        </div>
+        <div class="card" id="import-map" hidden></div>
+
+        <form class="card" id="form-privat">
+          <h3>ПриватБанк — автоматично через API</h3>
+          <p class="muted">ПриватБанк не відповідає програмам, відкритим у браузері, тому зв'язок іде через невеликий «міст» у вашому Google-акаунті. Він безкоштовний, працює цілодобово, знає лише ваш токен і вміє тільки читати баланси й виписки. Налаштування — один раз, близько 5 хвилин.</p>
+          <ol class="steps">
+            <li><b>Токен.</b> Приват24 для бізнесу → «Каталог послуг» → «Інтеграція (Автоклієнт)» → «Підключити API». Поле IP-адрес залиште порожнім. У налаштуваннях застосунку на вкладці «Обмеження по сервісам» увімкніть обмеження й залиште лише «Отримання балансів і транзакцій за рахунками». Скопіюйте токен.</li>
+            <li><b>Вставте токен</b> — програма підготує код мосту з вашим токеном:
+              <input name="token" id="privat-token" placeholder="Токен Автоклієнта" autocomplete="off" style="width:100%;margin-top:6px">
+            </li>
+          </ol>
+          <div id="privat-step2" hidden>
+            <ol class="steps" start="3">
+              <li><b>Створіть міст.</b> Відкрийте <a href="https://script.google.com/home/projects/create" target="_blank" rel="noopener">script.google.com → Новий проєкт</a>, видаліть усе в редакторі та вставте цей код:
+                <textarea id="privat-code" readonly rows="6" style="width:100%;margin-top:6px;font:12px/1.4 ui-monospace,Menlo,monospace"></textarea>
+                <div><button type="button" class="btn" id="btn-copy-code">Скопіювати код</button></div>
+              </li>
+              <li><b>Опублікуйте.</b> Угорі праворуч «Розгорнути» (Deploy) → «Нове розгортання» → тип «Веб-застосунок». «Виконувати від імені»: <b>Я</b>; «Хто має доступ»: <b>Усі</b>. Натисніть «Розгорнути» й дозвольте доступ своєму акаунту (Google попередить, що застосунок не перевірено, — це ваш власний скрипт: «Додатково» → «Перейти»).</li>
+              <li><b>Скопіюйте адресу веб-застосунку</b> (https://script.google.com/macros/s/…/exec) і вставте сюди:
+                <input name="bridge" id="privat-bridge" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off" style="width:100%;margin-top:6px">
+              </li>
+            </ol>
+            <button class="btn primary" type="submit">Підключити</button>
+          </div>
+        </form>
+
+
+        <div class="card">
+          <div class="card-head"><h3>Ваші дані</h3></div>
+          <p class="muted">Усі дані та токени зберігаються лише в цьому браузері на цьому комп'ютері — нікуди не надсилаються, крім запитів до Monobank, НБУ та вашого мосту ПриватБанку в Google. Регулярно робіть резервну копію: якщо очистити дані браузера, вони зникнуть.</p>
+          <div class="conn-actions">
+            <button class="btn" id="btn-backup">Зберегти резервну копію</button>
+            <label class="btn">Відновити з копії<input type="file" id="restore-file" accept=".json" hidden></label>
+            <button class="btn danger" id="btn-wipe">Видалити всі дані</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h3>Журнал синхронізації</h3><span class="muted small" id="sync-interval"></span></div>
+          <ul id="sync-log" class="log"></ul>
+        </div>
+      </section>
+
+      <!-- ПРАВИЛА -->
+      <section id="tab-rules" class="tab hidden">
+        <div class="section-head"><h2>Правила класифікації</h2></div>
+        <p class="muted">Якщо в призначенні платежу або назві контрагента є вказаний текст — операція отримує цю категорію. Ручна зміна категорії в «Операціях» завжди має пріоритет.</p>
+        <form class="card filters" id="form-rule">
+          <label class="grow">Текст <input name="pattern" placeholder="напр. «повернення»" required></label>
+          <label>Де шукати
+            <select name="field">
+              <option value="any">Будь-де</option><option value="description">Призначення</option>
+              <option value="counter_name">Контрагент</option><option value="counter_edrpou">ЄДРПОУ/РНОКПП</option>
+              <option value="comment">Коментар</option>
+            </select>
+          </label>
+          <label>Напрям
+            <select name="direction"><option value="in">Надходження</option><option value="out">Списання</option><option value="any">Будь-який</option></select>
+          </label>
+          <label>Категорія <select name="category" id="rule-category"></select></label>
+          <button class="btn primary" type="submit">Додати</button>
+        </form>
+        <div class="card flush"><div class="table-wrap"><table class="table" id="rules-table"></table></div></div>
+      </section>
+
+      <!-- НАЛАШТУВАННЯ -->
+      <section id="tab-settings" class="tab hidden">
+        <div class="section-head"><h2>Налаштування</h2></div>
+        <form class="card form-grid" id="form-settings">
+          <label>ПІБ власника ФОП
+            <input name="owner_name" placeholder="Прізвище Ім'я По батькові">
+            <span class="muted small">Надходження від вас самих не рахуються доходом</span>
+          </label>
+          <label>РНОКПП (ІПН)
+            <input name="owner_tax_id" inputmode="numeric" maxlength="10">
+          </label>
+          <label>Завантажувати виписки з дати
+            <input type="date" name="sync_start">
+          </label>
+          <label class="check"><input type="checkbox" name="esv_enabled"> Я сплачую ЄСВ за себе</label>
+          <div><button class="btn primary" type="submit">Зберегти</button></div>
+        </form>
+        <div class="card">
+          <div class="card-head"><h3>Податкові параметри за роками</h3></div>
+          <div class="table-wrap"><table class="table" id="params-table"></table></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+  <div id="tooltip" class="tooltip hidden"></div>
+  <script>/*JS*/</script>
+</body>
+</html>
