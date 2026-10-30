@@ -1078,7 +1078,11 @@ const DEFAULT_RULES = [
   ["з картки монобанк", "description", "in", "own_transfer", 40],
   ["повернення передоплати", "any", "out", "refund_to_buyer", 20],
   ["повернення коштів покупц", "any", "out", "refund_to_buyer", 20],
-].map(([pattern, field, direction, category, priority], i) => ({ id: i + 1, pattern, field, direction, category, priority }));
+  // v2: формулювання банку при продажу валютної виручки («Продаж UAH клієнтів / Гривні від продажу 922.00 USD по курсу 44.57»)
+  ["гривні від продажу", "any", "in", "currency_exchange", 10, 2],
+  ["продаж uah", "any", "in", "currency_exchange", 10, 2],
+].map(([pattern, field, direction, category, priority, since = 1], i) => ({ id: i + 1, pattern, field, direction, category, priority, since }));
+const RULES_VERSION = 2;
 
 // ============================================================ сховище
 const STORE_KEY = "fopIncome.v1";
@@ -1088,7 +1092,7 @@ function freshState() {
   return {
     settings: { owner_name: "", owner_tax_id: "", sync_start: `${new Date().getFullYear()}-01-01`, esv_enabled: true },
     taxParams: JSON.parse(JSON.stringify(DEFAULT_TAX)),
-    connections: [], accounts: {}, tx: {}, rules: DEFAULT_RULES.map((r) => ({ ...r })),
+    connections: [], accounts: {}, tx: {}, rules: DEFAULT_RULES.map(({ since, ...r }) => r), rulesVersion: RULES_VERSION,
     rates: {}, log: [], nextId: 100,
   };
 }
@@ -1108,6 +1112,7 @@ function load(data) {
     } catch { S = freshState(); }
   }
   const f = freshState();
+  if (S.rulesVersion === undefined) S.rulesVersion = 1; // дані, збережені до появи версій правил
   for (const k of Object.keys(f)) if (S[k] === undefined) S[k] = f[k];
   for (const [y, p] of Object.entries(DEFAULT_TAX)) if (!S.taxParams[y]) S.taxParams[y] = { ...p };
 }
@@ -1135,7 +1140,11 @@ function log(level, message) {
 }
 
 // ============================================================ класифікація
-const norm = (s) => String(s || "").toLowerCase().replace(/[ʼ’]/g, "'").replace(/\s+/g, " ").trim();
+// Банки інколи пишуть українські слова з латинськими літерами-двійниками («клiєнтiв», «Гривнi»).
+// Зводимо такі літери до кириличних — однаково і в тексті операції, і в правилі, тож збіг не залежить від розкладки.
+const LATIN_LOOKALIKE = { a: "а", c: "с", e: "е", i: "і", o: "о", p: "р", x: "х", y: "у", k: "к" };
+const norm = (s) => String(s || "").toLowerCase().replace(/[ʼ’`]/g, "'").replace(/[aceiopxyk]/g, (ch) => LATIN_LOOKALIKE[ch])
+  .replace(/\s+/g, " ").trim();
 
 function makeClassifier() {
   const rules = [...S.rules].sort((a, b) => a.priority - b.priority || a.id - b.id);
@@ -1645,7 +1654,8 @@ $("#import-map").addEventListener("click", async (e) => {
     const txs = rowsToTx(p.rows, p.headerIdx, p.map);
     if (!txs.length) return toast("Немає операцій для імпорту", true);
     e.target.disabled = true; e.target.textContent = "Імпортую…";
-    const accId = "file:" + hash(norm(p.accountName));
+    // id рахунку — за старим зведенням тексту (без заміни латинських літер), щоб повторний імпорт потрапляв у той самий рахунок
+    const accId = "file:" + hash(String(p.accountName || "").toLowerCase().replace(/[ʼ’]/g, "'").replace(/\s+/g, " ").trim());
     if (!S.accounts[accId]) S.accounts[accId] = { id: accId, connection_id: null, bank: "file", ext_id: accId, iban: "", currency: txs[0].currency, type: "file", name: p.accountName, balance: null, is_fop: true, enabled: true };
     const acc = S.accounts[accId];
     const added = await storeTransactions(acc, txs.map((t) => ({ ...t, ext_id: accId.slice(5) + "-" + t.ext_id })));
@@ -2140,6 +2150,16 @@ if (SERVER_MODE) {
     return;
   }
 } else load();
+// Нові стандартні правила додаються до вже збережених (видалені користувачем раніше правила не повертаємо)
+if ((S.rulesVersion || 1) < RULES_VERSION) {
+  const have = new Set(S.rules.map((r) => norm(r.pattern)));
+  const added = DEFAULT_RULES.filter((r) => r.since > (S.rulesVersion || 1) && !have.has(norm(r.pattern)));
+  for (const { since, ...r } of added) S.rules.push({ ...r, id: newId() });
+  S.rulesVersion = RULES_VERSION;
+  const n = reclassifyAll();
+  if (added.length) log("info", `Додано стандартні правила: ${added.map((r) => "«" + r.pattern + "»").join(", ")}; перекласифіковано операцій: ${n}`);
+  save(true);
+}
 if (S.commissionParser !== COMMISSION_PARSER_VERSION) {
   for (const t of Object.values(S.tx)) detectCommission(t);
   S.commissionParser = COMMISSION_PARSER_VERSION;
