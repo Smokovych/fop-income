@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="fop-mode" content="local">
   <title>ФОП-дохід</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232a78d6'/%3E%3Ctext x='16' y='22' font-size='17' text-anchor='middle' fill='white' font-family='sans-serif' font-weight='700'%3E₴%3C/text%3E%3C/svg%3E">
   <style>:root {
@@ -228,6 +229,15 @@ form.card.form-grid { display: grid; }
 </style>
 </head>
 <body>
+  <div id="login" class="login hidden">
+    <form id="login-form" class="card login-card">
+      <h1>ФОП-дохід</h1>
+      <p class="muted">Введіть пароль, щоб продовжити</p>
+      <input type="password" id="login-password" placeholder="Пароль" autocomplete="current-password" required>
+      <button class="btn primary" type="submit">Увійти</button>
+      <p id="login-error" class="error"></p>
+    </form>
+  </div>
   <div id="app">
     <header class="topbar">
       <div class="brand"><span class="logo">₴</span> ФОП-дохід</div>
@@ -360,11 +370,13 @@ form.card.form-grid { display: grid; }
 
         <div class="card">
           <div class="card-head"><h3>Ваші дані</h3></div>
-          <p class="muted">Усі дані та токени зберігаються лише в цьому браузері на цьому комп'ютері — нікуди не надсилаються, крім запитів до Monobank, НБУ та вашого мосту ПриватБанку в Google. Регулярно робіть резервну копію: якщо очистити дані браузера, вони зникнуть.</p>
+          <p class="muted" id="data-note">Усі дані та токени зберігаються лише в цьому браузері на цьому комп'ютері — нікуди не надсилаються, крім запитів до Monobank, НБУ та вашого мосту ПриватБанку в Google. Регулярно робіть резервну копію: якщо очистити дані браузера, вони зникнуть.</p>
           <div class="conn-actions">
             <button class="btn" id="btn-backup">Зберегти резервну копію</button>
             <label class="btn">Відновити з копії<input type="file" id="restore-file" accept=".json" hidden></label>
             <button class="btn danger" id="btn-wipe">Видалити всі дані</button>
+            <button class="btn" id="btn-logout" hidden>Вийти</button>
+            <span id="save-state" class="muted small"></span>
           </div>
         </div>
 
@@ -444,9 +456,10 @@ function parseCommission(text) {
   return isFinite(v) && v > 0 ? Math.round(v * 100) : 0;
 }
 
-// ============================================================ ПриватБанк (Автоклієнт) через «міст» Google Apps Script
+// ============================================================ ПриватБанк (Автоклієнт)
 // API ПриватБанку не дозволяє браузерним програмам звертатися до нього напряму (немає CORS).
-// Тому запити йдуть через невеликий скрипт у Google-акаунті користувача: він тримає токен,
+// На сервері запити йдуть через сам сервер (/proxy/privat, токен у підключенні).
+// Локально — через невеликий скрипт («міст») у Google-акаунті користувача: він тримає токен,
 // пропускає лише запити на читання балансів і виписок і повертає відповідь банку як є.
 // Документація API: «Опис API для взаємодії з серверною частиною Автоклієнта версія 3.0.0».
 
@@ -489,6 +502,7 @@ function randomKey() {
 }
 
 async function privatGet(conn, path, params = {}) {
+  if (!conn.bridge_url) return privatGetServer(conn, path, params);
   const u = new URL(conn.bridge_url);
   u.searchParams.set("key", conn.bridge_key);
   u.searchParams.set("path", path);
@@ -504,6 +518,21 @@ async function privatGet(conn, path, params = {}) {
     throw new Error("Міст повернув некоректну відповідь");
   }
   if (data.status && data.status !== "SUCCESS") throw new Error("ПриватБанк: " + (data.message || data.status));
+  return data;
+}
+
+async function privatGetServer(conn, path, params) {
+  if (typeof SERVER_MODE === "undefined" || !SERVER_MODE) throw new Error("Це підключення ПриватБанку працює лише на сервері програми");
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) if (v != null && v !== "") q.set(k, v);
+  let r;
+  try { r = await fetch(`/proxy/privat/${path}?${q}`, { headers: { "X-Privat-Token": conn.token }, credentials: "same-origin" }); }
+  catch { throw new Error("Немає зв'язку з сервером програми"); }
+  const data = await r.json().catch(() => null);
+  if (!data) throw new Error("ПриватБанк: некоректна відповідь (HTTP " + r.status + ")");
+  if (data.error && !data.status) throw new Error(data.error);
+  if (data.status && data.status !== "SUCCESS") throw new Error("ПриватБанк: " + (data.message || data.status));
+  if (!r.ok) throw new Error("ПриватБанк: HTTP " + r.status);
   return data;
 }
 
@@ -615,9 +644,44 @@ function privatMonthsLeft() {
 }
 
 // ---------------------------------------------------------------- форма підключення
+// На сервері міст не потрібен: лише токен
+function initPrivatFormServer(f) {
+  f.innerHTML = `<h3>ПриватБанк — автоматично через API</h3>
+    <ol class="steps">
+      <li><b>Токен.</b> Приват24 для бізнесу → «Каталог послуг» → «Інтеграція (Автоклієнт)» → «Підключити API». Поле IP-адрес залиште порожнім. У налаштуваннях застосунку на вкладці «Обмеження по сервісам» увімкніть обмеження й залиште лише «Отримання балансів і транзакцій за рахунками». Скопіюйте токен.</li>
+      <li><b>Вставте токен</b> і натисніть «Підключити»:
+        <input name="token" placeholder="Токен Автоклієнта" autocomplete="off" style="width:100%;margin-top:6px"></li>
+    </ol>
+    <button class="btn primary" type="submit">Підключити</button>`;
+  f.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const token = f.token.value.trim();
+    if (!token) return toast("Вставте токен Автоклієнта", true);
+    if (S.connections.some((c) => c.bank === "privat" && c.token === token)) return toast("Цей токен уже підключено", true);
+    const btn = $("button[type=submit]", f);
+    btn.disabled = true; btn.textContent = "Перевіряю зв'язок з банком…";
+    const conn = { id: 0, bank: "privat", name: "ПриватБанк", bridge_url: null, token, owner_name: null, last_sync_at: null, last_error: null, created_at: nowTs() };
+    try {
+      const accounts = await privatAccounts(conn);
+      if (!accounts.length) throw new Error("Банк не повернув жодного рахунку. Перевірте, що в налаштуваннях API дозволено «Отримання балансів і транзакцій».");
+      conn.id = newId();
+      S.connections.push(conn);
+      upsertAccounts(conn, accounts);
+      log("info", `Додано ПриватБанк, рахунків: ${accounts.length}`);
+      save(true);
+      f.reset();
+      toast(`ПриватБанк підключено, рахунків: ${accounts.length}. Завантажую виписку.`);
+      loadBanks();
+      syncAll(conn.id, true);
+    } catch (err) { toast(err.message, true); }
+    btn.disabled = false; btn.textContent = "Підключити";
+  });
+}
+
 function initPrivatForm() {
   const f = $("#form-privat");
   if (!f) return;
+  if (typeof SERVER_MODE !== "undefined" && SERVER_MODE) return initPrivatFormServer(f);
   // ключ мосту зберігаємо, щоб він не змінився, якщо сторінку перезавантажать посеред налаштування
   if (!S.privatPendingKey) { S.privatPendingKey = randomKey(); save(); }
   let key = S.privatPendingKey;
@@ -641,10 +705,11 @@ function initPrivatForm() {
     if (S.connections.some((c) => c.bridge_url === url)) return toast("Цей міст уже підключено", true);
     const btn = $("button[type=submit]", f);
     btn.disabled = true; btn.textContent = "Перевіряю зв'язок з банком…";
-    const conn = { id: S.nextId++, bank: "privat", name: "ПриватБанк", bridge_url: url, bridge_key: key, token: "", owner_name: null, last_sync_at: null, last_error: null, created_at: nowTs() };
+    const conn = { id: 0, bank: "privat", name: "ПриватБанк", bridge_url: url, bridge_key: key, token: "", owner_name: null, last_sync_at: null, last_error: null, created_at: nowTs() };
     try {
       const accounts = await privatAccounts(conn);
       if (!accounts.length) throw new Error("Банк не повернув жодного рахунку. Перевірте, що в налаштуваннях API дозволено «Отримання балансів і транзакцій».");
+      conn.id = newId();
       S.connections.push(conn);
       upsertAccounts(conn, accounts);
       log("info", `Додано ПриватБанк, рахунків: ${accounts.length}`);
@@ -659,10 +724,235 @@ function initPrivatForm() {
   });
 }
 
+// ============================================================ режим сервера (спільні дані на всіх пристроях)
+// Та сама програма працює двома способами:
+//  • локально (файл або GitHub Pages) — дані в localStorage цього браузера;
+//  • на сервері — дані зберігаються на сервері й однакові на всіх пристроях, запити до банків
+//    ідуть через сервер (ПриватБанк — без мосту Google). Сервер підставляє <meta name="fop-mode" content="server">.
+// Збереження: увесь стан надсилається на сервер разом з версією, від якої почались зміни. Якщо інший
+// пристрій встиг записати новішу версію, зміни об'єднуються (тристороннє злиття: база / наші / їхні)
+// і надсилаються ще раз. Об'єкти змінюються на місці, тож синхронізація, що саме йде, нічого не губить.
+
+const SERVER_MODE = (document.querySelector('meta[name="fop-mode"]') || {}).content === "server";
+const DEVICE_ID = (() => {
+  try {
+    let d = localStorage.getItem("fopIncome.device");
+    if (!d) { d = randomKey().slice(0, 12); localStorage.setItem("fopIncome.device", d); }
+    return d;
+  } catch { return randomKey().slice(0, 12); }
+})();
+
+const R = { version: 0, base: null, changes: 0, pushing: false, again: false, timer: null, wipe: false, failing: false, retry: null };
+
+// ---------------------------------------------------------------- злиття
+const isPlain = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+const sameJSON = (a, b) => a === b || JSON.stringify(a) === JSON.stringify(b);
+const isIdArray = (v) => Array.isArray(v) && v.every((x) => isPlain(x) && x.id != null);
+
+function merge3(base, ours, theirs) {
+  if (isPlain(ours) && isPlain(theirs)) {
+    const b = isPlain(base) ? base : {};
+    for (const k of new Set([...Object.keys(ours), ...Object.keys(theirs)])) {
+      const v = merge3(b[k], ours[k], theirs[k]);
+      if (v === undefined) delete ours[k]; else ours[k] = v;
+    }
+    return ours;
+  }
+  if (isIdArray(ours) && isIdArray(theirs) && (base === undefined || isIdArray(base))) {
+    const toMap = (arr) => Object.fromEntries((arr || []).map((x) => [String(x.id), x]));
+    const m = merge3(toMap(base), toMap(ours), toMap(theirs));
+    const order = [...theirs.map((x) => String(x.id)), ...ours.map((x) => String(x.id))];
+    return [...new Set(order)].filter((id) => m[id] !== undefined).map((id) => m[id]);
+  }
+  if (sameJSON(ours, base)) return theirs === undefined ? undefined : JSON.parse(JSON.stringify(theirs));
+  return ours; // змінили обидва — перемагає цей пристрій
+}
+
+function mergeLog(a, b) {
+  const seen = new Set(), out = [];
+  for (const l of [...(a || []), ...(b || [])]) {
+    const k = l.ts + "|" + l.message;
+    if (!seen.has(k)) { seen.add(k); out.push(l); }
+  }
+  return out.sort((x, y) => y.ts - x.ts).slice(0, 200);
+}
+
+// Вливає в S стан з сервера (theirs), зберігаючи зміни цього пристрою відносно бази.
+function absorbRemote(theirs) {
+  const log = mergeLog(S.log, theirs.log);
+  const nextId = Math.max(S.nextId || 0, theirs.nextId || 0);
+  merge3(R.base || {}, S, theirs);
+  S.log = log; S.nextId = nextId;
+}
+
+// ---------------------------------------------------------------- запити до сервера
+let loginWaiter = null;
+async function api(method, path, body, opts = {}) {
+  const init = { method, credentials: "same-origin", headers: {} };
+  if (body !== undefined) {
+    init.headers["Content-Type"] = "application/json";
+    init.body = body;
+    if (opts.gzip) init.headers["Content-Encoding"] = "gzip";
+  }
+  let r;
+  try { r = await fetch(path, init); }
+  catch { throw new Error("Немає зв'язку з сервером"); }
+  if (r.status === 401 && !opts.noLogin) { await showLogin(); return api(method, path, body, opts); }
+  const data = await r.json().catch(() => ({}));
+  return { ok: r.ok, status: r.status, data };
+}
+
+function showLogin() {
+  if (loginWaiter) return loginWaiter;
+  const box = $("#login"), form = $("#login-form"), err = $("#login-error");
+  box.classList.remove("hidden");
+  $("#app").classList.add("hidden");
+  $("#login-password").focus();
+  loginWaiter = new Promise((resolve) => {
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      err.textContent = "";
+      const res = await api("POST", "/api/login", JSON.stringify({ password: $("#login-password").value }), { noLogin: true })
+        .catch((x) => ({ ok: false, data: { error: x.message } }));
+      if (!res.ok) { err.textContent = res.data.error || "Не вдалося увійти"; return; }
+      $("#login-password").value = "";
+      box.classList.add("hidden");
+      $("#app").classList.remove("hidden");
+      loginWaiter = null;
+      resolve();
+    };
+  });
+  return loginWaiter;
+}
+
+async function gzipText(text) {
+  if (typeof CompressionStream === "undefined") return null;
+  const stream = new Blob([text]).stream().pipeThrough(new CompressionStream("gzip"));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+// ---------------------------------------------------------------- завантаження і збереження
+async function remoteBoot() {
+  $("#app").classList.add("hidden");
+  const me = await api("GET", "/api/me", undefined, { noLogin: true });
+  if (!me.data.auth_required && !me.data.authenticated) throw new Error("На сервері не задано пароль. Додайте змінну APP_PASSWORD у налаштуваннях сервера (Railway → Variables) і оновіть сторінку.");
+  if (me.data.auth_required && !me.data.authenticated) await showLogin();
+  $("#app").classList.remove("hidden");
+  const res = await api("GET", "/api/state");
+  if (!res.ok) throw new Error(res.data.error || "Не вдалося завантажити дані з сервера");
+  R.version = res.data.version;
+  R.base = res.data.state ? JSON.parse(JSON.stringify(res.data.state)) : null;
+  load(res.data.state);
+  if (!R.base || !sameJSON(R.base, S)) save();
+  setInterval(pollRemote, 20000);
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") pollRemote(); });
+  addEventListener("beforeunload", (e) => { if (R.changes || R.pushing) { e.preventDefault(); e.returnValue = ""; } });
+  adaptUiForServer();
+}
+
+function remoteSave(now) {
+  R.changes++;
+  clearTimeout(R.timer);
+  R.timer = setTimeout(pushRemote, now ? 200 : 2000);
+}
+
+function setSaveState(text, isError) {
+  const el = $("#save-state");
+  if (!el) return;
+  el.textContent = text;
+  el.className = "muted small" + (isError ? " error" : "");
+}
+
+async function pushRemote() {
+  if (R.pushing) { R.again = true; return; }
+  if (!R.changes) return;
+  R.pushing = true;
+  const startChanges = R.changes;
+  try {
+    for (let attempt = 0; attempt < 6; attempt++) {
+      const snapshot = JSON.stringify(S);
+      const payload = JSON.stringify({ state: JSON.parse(snapshot), base_version: R.version, device: DEVICE_ID, wipe: R.wipe });
+      const gz = await gzipText(payload);
+      const res = await api("PUT", "/api/state", gz || payload, { gzip: !!gz });
+      if (res.ok) {
+        R.version = res.data.version;
+        R.base = JSON.parse(snapshot);
+        R.wipe = false;
+        if (R.changes === startChanges) R.changes = 0;
+        if (R.failing) { R.failing = false; toast("Дані знову зберігаються на сервері"); }
+        setSaveState("Збережено на сервері");
+        return;
+      }
+      if (res.status === 409 && res.data.error === "conflict") {
+        absorbRemote(res.data.state || {});
+        R.base = JSON.parse(JSON.stringify(res.data.state || {}));
+        R.version = res.data.version;
+        refreshActive(); renderBanner();
+        continue;
+      }
+      throw new Error(res.data.error || "HTTP " + res.status);
+    }
+    throw new Error("Не вдалося об'єднати зміни з іншими пристроями");
+  } catch (e) {
+    setSaveState("Не збережено на сервері — повторю спробу", true);
+    if (!R.failing) { R.failing = true; toast("Не вдалося зберегти на сервері: " + e.message + ". Спробую ще раз.", true); }
+    clearTimeout(R.retry);
+    R.retry = setTimeout(pushRemote, 30000);
+  } finally {
+    R.pushing = false;
+    if (R.again) { R.again = false; clearTimeout(R.timer); R.timer = setTimeout(pushRemote, 500); }
+  }
+}
+
+// Підтягує зміни з інших пристроїв
+async function pollRemote() {
+  if (R.pushing || loginWaiter) return;
+  try {
+    const meta = await api("GET", "/api/state/meta", undefined, { noLogin: true });
+    if (!meta.ok || meta.data.version <= R.version) return;
+    if (R.changes) return pushRemote(); // сервер поверне конфлікт з новими даними — зміни об'єднаються
+    const res = await api("GET", "/api/state");
+    if (!res.ok || R.pushing || R.changes || !res.data.state) return;
+    absorbRemote(res.data.state);
+    R.base = JSON.parse(JSON.stringify(res.data.state));
+    R.version = res.data.version;
+    refreshActive(); renderBanner(); setStatus(statusText);
+  } catch {}
+}
+
+// ---------------------------------------------------------------- замок синхронізації з банками
+let lockTimer = null;
+async function acquireSyncLock() {
+  if (!SERVER_MODE) return true;
+  const res = await api("POST", "/api/sync-lock", JSON.stringify({ device: DEVICE_ID })).catch(() => null);
+  if (!res || !res.ok) return true; // сервер недоступний — не блокуємо роботу
+  if (!res.data.granted) return false;
+  clearInterval(lockTimer);
+  lockTimer = setInterval(() => api("POST", "/api/sync-lock", JSON.stringify({ device: DEVICE_ID })).catch(() => {}), 60000);
+  return true;
+}
+function releaseSyncLock() {
+  if (!SERVER_MODE) return;
+  clearInterval(lockTimer);
+  api("POST", "/api/sync-lock", JSON.stringify({ device: DEVICE_ID, release: true })).catch(() => {});
+}
+
+// ---------------------------------------------------------------- тексти інтерфейсу для сервера
+function adaptUiForServer() {
+  const p = $("#data-note");
+  if (p) p.textContent = "Дані зберігаються на вашому сервері й однакові на всіх пристроях: телефоні, ноутбуці, планшеті. "
+    + "Сервер щодня робить кілька автоматичних копій, але власна резервна копія не завадить — особливо перед поданням декларації.";
+  const out = $("#btn-logout");
+  if (out) {
+    out.hidden = false;
+    out.onclick = async () => { await api("POST", "/api/logout", "{}", { noLogin: true }); location.reload(); };
+  }
+}
+
 "use strict";
 /* ФОП-дохід — версія, що працює повністю в браузері.
-   Monobank і курси НБУ — напряму через їхні API; ПриватБанк та інші — імпорт файлу виписки.
-   Усі дані зберігаються в localStorage цього браузера. */
+   Monobank і курси НБУ — напряму через їхні API; ПриватБанк — через міст або сервер; інші — імпорт файлу виписки.
+   Локально дані зберігаються в localStorage цього браузера, на сервері — на сервері (див. remote.js). */
 
 // ============================================================ утиліти
 const $ = (s, el = document) => el.querySelector(s);
@@ -684,7 +974,7 @@ const API = Object.assign({
   mono: "https://api.monobank.ua",
   nbu: "https://bank.gov.ua/NBUStatService/v1/statdirectory/exchange",
   monoInterval: 61000,
-}, (() => { try { return JSON.parse(localStorage.getItem("fopIncome.api") || "{}"); } catch { return {}; } })());
+}, SERVER_MODE ? { mono: "/proxy/mono", nbu: "/proxy/nbu" } : {}, (() => { try { return JSON.parse(localStorage.getItem("fopIncome.api") || "{}"); } catch { return {}; } })());
 
 const KYIV_FMT = new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Kyiv", year: "numeric", month: "2-digit", day: "2-digit" });
 const kyivDate = (ts) => KYIV_FMT.format(new Date(ts * 1000)); // YYYY-MM-DD
@@ -755,11 +1045,20 @@ function freshState() {
   };
 }
 
-function load() {
-  try {
-    const raw = localStorage.getItem(STORE_KEY);
-    S = raw ? JSON.parse(raw) : freshState();
-  } catch { S = freshState(); }
+// Новий id для підключень і правил: часова мітка, щоб два пристрої не видали однаковий id
+function newId() {
+  S.nextId = Math.max((S.nextId || 0) + 1, Date.now());
+  return S.nextId;
+}
+
+function load(data) {
+  if (data !== undefined) S = data ? JSON.parse(JSON.stringify(data)) : freshState();
+  else {
+    try {
+      const raw = localStorage.getItem(STORE_KEY);
+      S = raw ? JSON.parse(raw) : freshState();
+    } catch { S = freshState(); }
+  }
   const f = freshState();
   for (const k of Object.keys(f)) if (S[k] === undefined) S[k] = f[k];
   for (const [y, p] of Object.entries(DEFAULT_TAX)) if (!S.taxParams[y]) S.taxParams[y] = { ...p };
@@ -767,6 +1066,7 @@ function load() {
 
 let saveTimer, allowWipe = false;
 function save(now = false) {
+  if (SERVER_MODE) return remoteSave(now);
   clearTimeout(saveTimer);
   const doSave = () => {
     try {
@@ -958,7 +1258,7 @@ function upsertAccounts(conn, accounts) {
 async function addMono(token) {
   setStatus("Перевіряю токен Monobank…");
   const info = await monoClientInfo(token);
-  const conn = { id: S.nextId++, bank: "mono", name: `Monobank — ${info.name}`, token, owner_name: info.name, last_sync_at: null, last_error: null, created_at: nowTs() };
+  const conn = { id: newId(), bank: "mono", name: `Monobank — ${info.name}`, token, owner_name: info.name, last_sync_at: null, last_error: null, created_at: nowTs() };
   S.connections.push(conn);
   upsertAccounts(conn, info.accounts);
   if (!S.settings.owner_name) S.settings.owner_name = info.name;
@@ -1058,9 +1358,15 @@ function renderBanner() {
 }
 document.addEventListener("click", (e) => { if (e.target.id === "banner-resume") syncAll(); });
 
-async function syncAll(onlyConnId) {
+async function syncAll(onlyConnId, userInitiated = false) {
   if (syncing) { syncQueued = true; return; }
   syncing = true;
+  if (!(await acquireSyncLock())) {
+    syncing = false;
+    setStatus("");
+    if (userInitiated) toast("Виписки зараз оновлює інший ваш пристрій. Нові операції з'являться тут автоматично.");
+    return;
+  }
   renderBanner();
   try {
     for (const conn of S.connections) {
@@ -1093,6 +1399,7 @@ async function syncAll(onlyConnId) {
     }
     await fillMissingRates();
   } finally {
+    releaseSyncLock();
     syncing = false;
     syncProgress.current = null;
     setStatus("");
@@ -1630,7 +1937,7 @@ function loadBanks() {
   $("#connections").innerHTML = (groups.map(({ conn: c, accounts }) => `
     <div class="card conn" data-id="${c.id}">
       <div class="conn-head"><div><h3>${esc(c.name)}</h3>
-        <div class="muted small">${c.bank === "privat" ? "Через міст Google Apps Script" : `Токен ${esc(c.token.slice(0, 4))}…${esc(c.token.slice(-4))}`} · ${c.last_sync_at ? "оновлено " + new Date(c.last_sync_at * 1000).toLocaleString("uk-UA") : "ще не оновлювалось"}</div>
+        <div class="muted small">${c.bridge_url ? "Через міст Google Apps Script" : `Токен ${esc(c.token.slice(0, 4))}…${esc(c.token.slice(-4))}`} · ${c.last_sync_at ? "оновлено " + new Date(c.last_sync_at * 1000).toLocaleString("uk-UA") : "ще не оновлювалось"}</div>
         ${c.last_error ? `<div class="error small">Помилка: ${esc(c.last_error)}</div>` : ""}</div>
         <div class="conn-actions"><button class="btn" data-act="sync">Оновити виписку</button><button class="btn danger" data-act="delete">Видалити</button></div></div>
       ${accTable(accounts, true)}</div>`).join("")
@@ -1651,7 +1958,7 @@ $("#connections").addEventListener("click", (e) => {
   const act = e.target.dataset.act;
   if (!act) return;
   const id = Number(e.target.closest(".conn").dataset.id);
-  if (act === "sync") { syncAll(id); toast("Оновлення запущено"); }
+  if (act === "sync") { syncAll(id, true); toast("Оновлення запущено"); }
   if (act === "delete") {
     if (!confirm("Видалити підключення разом з усіма його операціями?")) return;
     S.connections = S.connections.filter((c) => c.id !== id);
@@ -1703,20 +2010,22 @@ $("#restore-file").addEventListener("change", async (e) => {
   try {
     const data = JSON.parse(await file.text());
     if (!data.tx || !data.accounts) throw new Error("Це не резервна копія ФОП-доходу");
-    if (!confirm("Замінити поточні дані даними з резервної копії?")) return;
-    S = Object.assign(freshState(), data);
+    if (!confirm(SERVER_MODE ? "Замінити дані на сервері (на всіх пристроях) даними з резервної копії?" : "Замінити поточні дані даними з резервної копії?")) return;
+    const fresh = Object.assign(freshState(), data);
+    if (SERVER_MODE) { for (const k of Object.keys(S)) delete S[k]; Object.assign(S, fresh); } else S = fresh;
     save(true); toast("Дані відновлено"); openTab("overview");
   } catch (err) { toast(err.message, true); }
   e.target.value = "";
 });
 $("#btn-wipe").addEventListener("click", () => {
   if (!confirm("Видалити всі дані та токени з цього браузера? Без резервної копії їх не повернути.")) return;
-  S = freshState(); allowWipe = true; save(true); allowWipe = false; toast("Усі дані видалено"); openTab("overview");
+  if (SERVER_MODE) { for (const k of Object.keys(S)) delete S[k]; Object.assign(S, freshState()); R.wipe = true; } else S = freshState();
+  allowWipe = true; save(true); allowWipe = false; toast("Усі дані видалено"); openTab("overview");
 });
 
 $("#btn-sync-all").addEventListener("click", () => {
   if (!S.connections.length) return toast("Немає підключених через API банків. Додайте Monobank або ПриватБанк на вкладці «Банки».");
-  syncAll(); toast("Оновлення запущено");
+  syncAll(null, true); toast("Оновлення запущено");
 });
 
 // ============================================================ правила
@@ -1737,7 +2046,7 @@ $("#form-rule").addEventListener("submit", (e) => {
   e.preventDefault();
   const d = Object.fromEntries(new FormData(e.target));
   if (!d.pattern.trim()) return;
-  S.rules.push({ id: S.nextId++, pattern: d.pattern.trim(), field: d.field, direction: d.direction, category: d.category, priority: 50 });
+  S.rules.push({ id: newId(), pattern: d.pattern.trim(), field: d.field, direction: d.direction, category: d.category, priority: 50 });
   e.target.reset();
   toast(`Правило додано, перекласифіковано: ${reclassifyAll()}`);
   loadRules();
@@ -1775,7 +2084,14 @@ $("#params-table").addEventListener("click", (e) => {
 });
 
 // ============================================================ старт
-load();
+async function boot() {
+if (SERVER_MODE) {
+  try { await remoteBoot(); }
+  catch (e) {
+    document.body.innerHTML = `<div class="login"><div class="card login-card"><h1>ФОП-дохід</h1><p class="error">${esc(e.message)}</p><button class="btn primary" onclick="location.reload()">Спробувати ще раз</button></div></div>`;
+    return;
+  }
+} else load();
 if (S.commissionParser !== COMMISSION_PARSER_VERSION) {
   for (const t of Object.values(S.tx)) detectCommission(t);
   S.commissionParser = COMMISSION_PARSER_VERSION;
@@ -1791,7 +2107,9 @@ setStatus("");
 renderBanner();
 if (S.connections.length) setTimeout(() => syncAll(), 500);
 setInterval(() => { if (S.connections.length) syncAll(); }, 60 * 60 * 1000);
-window.__fop = { get S() { return S; }, summary, syncAll }; // для діагностики
+}
+boot();
+window.__fop = { get S() { return S; }, summary, syncAll, R }; // для діагностики
 
 </script>
 </body>

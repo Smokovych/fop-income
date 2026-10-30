@@ -16,6 +16,8 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.environ.get("DATA_DIR", os.path.join(BASE_DIR, "data"))
 DB_PATH = os.environ.get("DB_PATH", os.path.join(DATA_DIR, "fop.sqlite3"))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
+# Інтерфейс — та сама однофайлова програма, що й на GitHub Pages (збирається standalone/build.py)
+UI_FILE = os.environ.get("UI_FILE", os.path.join(BASE_DIR, "docs", "index.html"))
 
 HOST = os.environ.get("HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "8080"))

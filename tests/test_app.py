@@ -219,7 +219,122 @@ class T5_Http(unittest.TestCase):
 
     def test_static_traversal(self):
         st, body, _ = self.req("GET", "/../app/config.py")
-        self.assertNotIn(b"APP_PASSWORD", body)
+        self.assertNotIn(b"os.environ.get", body)  # віддається лише сторінка програми, не файли сервера
+        self.assertIn(b"fop-mode", body)
+
+
+class T6_SharedState(T5_Http):
+    """Спільне сховище для браузерної програми, замок синхронізації, запити до банків через сервер."""
+
+    @classmethod
+    def setUpClass(cls):
+        from http.server import ThreadingHTTPServer
+        from app import store
+        store.init()
+        cls.srv = ThreadingHTTPServer(("127.0.0.1", APP_PORT + 1), server.Handler)
+        threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
+        cls.base = f"http://127.0.0.1:{APP_PORT + 1}"
+
+    def state(self, n_tx=1):
+        return {"settings": {}, "connections": [], "rules": [], "rates": {}, "log": [], "nextId": 1,
+                "accounts": {"mono:a": {"id": "mono:a"}},
+                "tx": {f"mono:{i}": {"id": f"mono:{i}", "amount": 100 * i} for i in range(n_tx)}}
+
+    def test_a_state_roundtrip_and_conflict(self):
+        c = self.login()
+        st, body, _ = self.req("GET", "/api/state", cookie=c)
+        self.assertEqual(st, 200)
+        v0 = json.loads(body)["version"]
+        st, body, _ = self.req("PUT", "/api/state", {"state": self.state(3), "base_version": v0, "device": "A"}, cookie=c)
+        self.assertEqual(st, 200)
+        v1 = json.loads(body)["version"]
+        self.assertEqual(v1, v0 + 1)
+        # другий пристрій зі старою версією отримує конфлікт і актуальні дані
+        st, body, _ = self.req("PUT", "/api/state", {"state": self.state(1), "base_version": v0, "device": "B"}, cookie=c)
+        self.assertEqual(st, 409)
+        d = json.loads(body)
+        self.assertEqual(d["error"], "conflict")
+        self.assertEqual(d["version"], v1)
+        self.assertEqual(len(d["state"]["tx"]), 3)
+        st, body, _ = self.req("GET", "/api/state/meta", cookie=c)
+        self.assertEqual(json.loads(body)["version"], v1)
+
+    def test_b_empty_state_does_not_wipe(self):
+        c = self.login()
+        v = json.loads(self.req("GET", "/api/state/meta", cookie=c)[1])["version"]
+        if v == 0:
+            v = json.loads(self.req("PUT", "/api/state", {"state": self.state(2), "base_version": 0}, cookie=c)[1])["version"]
+        empty = {**self.state(0), "accounts": {}}
+        st, _, _ = self.req("PUT", "/api/state", {"state": empty, "base_version": v}, cookie=c)
+        self.assertEqual(st, 409)
+        st, body, _ = self.req("PUT", "/api/state", {"state": empty, "base_version": v, "wipe": True}, cookie=c)
+        self.assertEqual(st, 200)
+        # копія перед очищенням збереглася
+        st, body, _ = self.req("GET", "/api/backups", cookie=c)
+        self.assertTrue(any(b["version"] == v for b in json.loads(body)))
+        restored = json.loads(self.req("GET", f"/api/backups/{v}", cookie=c)[1])
+        self.assertTrue(restored["tx"])
+
+    def test_c_gzip_upload(self):
+        import gzip
+        c = self.login()
+        v = json.loads(self.req("GET", "/api/state/meta", cookie=c)[1])["version"]
+        raw = json.dumps({"state": self.state(2000), "base_version": v}).encode()
+        r = urllib.request.Request(self.base + "/api/state", data=gzip.compress(raw), method="PUT", headers={
+            "Cookie": c, "Content-Type": "application/json", "Content-Encoding": "gzip"})
+        with urllib.request.urlopen(r) as resp:
+            self.assertEqual(resp.status, 200)
+        r = urllib.request.Request(self.base + "/api/state", headers={"Cookie": c, "Accept-Encoding": "gzip"})
+        with urllib.request.urlopen(r) as resp:
+            self.assertEqual(resp.headers["Content-Encoding"], "gzip")
+            self.assertEqual(len(json.loads(gzip.decompress(resp.read()))["state"]["tx"]), 2000)
+
+    def test_d_state_requires_login(self):
+        self.assertEqual(self.req("GET", "/api/state")[0], 401)
+        self.assertEqual(self.req("GET", "/proxy/nbu?valcode=USD&date=20260105")[0], 401)
+
+    def test_e_sync_lock(self):
+        c = self.login()
+        g = lambda d, **kw: json.loads(self.req("POST", "/api/sync-lock", {"device": d, **kw}, cookie=c)[1])
+        self.assertTrue(g("phone")["granted"])
+        self.assertTrue(g("phone")["granted"])           # продовження власного замка
+        self.assertFalse(g("laptop")["granted"])         # інший пристрій чекає
+        g("phone", release=True)
+        self.assertTrue(g("laptop")["granted"])
+        g("laptop", release=True)
+
+    def test_f_proxy(self):
+        c = self.login()
+        r = urllib.request.Request(self.base + "/proxy/mono/personal/client-info", headers={"Cookie": c, "X-Token": "t"})
+        with urllib.request.urlopen(r) as resp:
+            self.assertEqual(len(json.loads(resp.read())["accounts"]), 3)
+        # без токена сервер не звертається до банку
+        st, body, _ = self.req("GET", "/proxy/mono/personal/client-info", cookie=c)
+        self.assertEqual(st, 400)
+        # помилка банку передається як є (статус і тіло)
+        r = urllib.request.Request(self.base + "/proxy/mono/personal/statement/acc-fop-uah/0/99999999", headers={"Cookie": c, "X-Token": "t"})
+        with self.assertRaises(urllib.error.HTTPError) as e:
+            urllib.request.urlopen(r)
+        self.assertEqual(e.exception.code, 400)
+        self.assertIn("31 days", json.loads(e.exception.read())["errorDescription"])
+        # лише дозволені шляхи
+        self.assertEqual(self.req("GET", "/proxy/mono/personal/webhook", cookie=c)[0], 403)
+        self.assertEqual(self.req("GET", "/proxy/privat/statements/../../admin", cookie=c)[0], 403)
+        r = urllib.request.Request(self.base + "/proxy/privat/statements/balance?startDate=01-10-2026&endDate=01-10-2026",
+                                   headers={"Cookie": c, "X-Privat-Token": "pt"})
+        with urllib.request.urlopen(r) as resp:
+            self.assertEqual(json.loads(resp.read())["status"], "SUCCESS")
+        st, body, _ = self.req("GET", "/proxy/nbu?valcode=USD&date=20260105&json", cookie=c)
+        self.assertEqual(json.loads(body)[0]["rate"], mock_banks.NBU_USD)
+        self.assertEqual(self.req("GET", "/proxy/nbu?valcode=usd;x&date=20260105", cookie=c)[0], 400)
+
+    def test_g_ui_served_in_server_mode(self):
+        st, body, h = self.req("GET", "/")
+        self.assertEqual(st, 200)
+        self.assertIn(b'<meta name="fop-mode" content="server">', body)
+        self.assertIn("frame-ancestors 'none'", h["Content-Security-Policy"])
+        st, body, _ = self.req("GET", "/some/page")
+        self.assertIn(b"fop-mode", body)
 
 
 import urllib.error  # noqa: E402

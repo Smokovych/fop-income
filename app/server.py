@@ -1,5 +1,6 @@
 """HTTP-сервер: JSON API + статичний фронтенд. Лише стандартна бібліотека Python."""
 import csv
+import gzip
 import hashlib
 import hmac
 import io
@@ -16,7 +17,7 @@ from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote
 
-from . import config, db, tax
+from . import config, db, tax, store, proxy
 from .classify import reclassify_all
 from .sync import worker, add_connection, set_mono_webhook, handle_mono_webhook, refresh_accounts
 
@@ -68,15 +69,100 @@ def valid_session(value):
 
 @route("GET", "/api/me", public=True)
 def api_me(h, m, body):
-    return {"auth_required": bool(config.APP_PASSWORD), "authenticated": h.authenticated()}
+    return {"server": True, "auth_required": bool(config.APP_PASSWORD), "authenticated": h.authenticated()}
+
+
+# ======================================================================= спільне сховище (браузерна програма)
+
+@route("GET", "/api/state")
+def api_state_get(h, m, body):
+    return store.get()
+
+
+@route("GET", "/api/state/meta")
+def api_state_meta(h, m, body):
+    return store.meta()
+
+
+@route("PUT", "/api/state")
+def api_state_put(h, m, body):
+    body = body or {}
+    try:
+        v = store.put(body.get("state"), int(body.get("base_version") or 0),
+                      device=str(body.get("device") or "")[:64] or None, wipe=bool(body.get("wipe")))
+    except store.Conflict as c:
+        h.send_json(409, {"error": "conflict", **c.current})
+        return None
+    except store.WipeRefused:
+        raise HttpError(409, "Порожні дані не можуть замінити збережені. Для очищення скористайтеся «Видалити всі дані».")
+    except ValueError as e:
+        raise HttpError(400, str(e))
+    return {"version": v}
+
+
+@route("GET", "/api/backups")
+def api_backups(h, m, body):
+    return store.backups()
+
+
+@route("GET", r"/api/backups/(?P<version>\d+)")
+def api_backup(h, m, body):
+    data = store.backup(int(m["version"]))
+    if data is None:
+        raise HttpError(404, "Копію не знайдено")
+    return data
+
+
+@route("POST", "/api/sync-lock")
+def api_sync_lock(h, m, body):
+    device = str((body or {}).get("device") or "")[:64]
+    if not device:
+        raise HttpError(400, "Не вказано пристрій")
+    if (body or {}).get("release"):
+        store.release_sync(device)
+        return {"released": True}
+    return store.acquire_sync(device)
+
+
+# ======================================================================= запити до банків і НБУ
+
+def _proxied(h, result):
+    status, data, ctype = result
+    h.send_raw(status, data, ctype, {"Cache-Control": "no-store"})
+
+
+@route("GET", r"/proxy/mono/(?P<path>.+)")
+def px_mono(h, m, body):
+    _proxied(h, proxy.mono(m["path"], h.headers.get("X-Token", "")))
+
+
+@route("GET", r"/proxy/privat/(?P<path>.+)")
+def px_privat(h, m, body):
+    q = {k: v[0] for k, v in h._qs.items()}
+    _proxied(h, proxy.privat(m["path"], q, h.headers.get("X-Privat-Token", "")))
+
+
+@route("GET", "/proxy/nbu")
+def px_nbu(h, m, body):
+    q = {k: v[0] for k, v in h._qs.items()}
+    q.setdefault("json", "")
+    _proxied(h, proxy.nbu(q))
+
+
+_login_fails = []
 
 
 @route("POST", "/api/login", public=True)
 def api_login(h, m, body):
     if not config.APP_PASSWORD:
         return {"ok": True}
+    now = time.time()
+    _login_fails[:] = [t for t in _login_fails if t > now - 600]
+    if len(_login_fails) >= 10:
+        raise HttpError(429, "Забагато невдалих спроб. Спробуйте через 10 хвилин.")
     pw = (body or {}).get("password", "")
     if not hmac.compare_digest(pw.encode(), config.APP_PASSWORD.encode()):
+        _login_fails.append(now)
         time.sleep(1.0)
         raise HttpError(401, "Невірний пароль")
     h.set_cookie = make_session()
@@ -357,13 +443,24 @@ class Handler(BaseHTTPRequestHandler):
     def qs(self, key):
         return self._qs.get(key, [None])[0]
 
+    def is_local_client(self):
+        return (self.client_address[0] in ("127.0.0.1", "::1") and not self.headers.get("X-Forwarded-For")) \
+            or os.environ.get("ALLOW_NO_PASSWORD") == "1"
+
     def authenticated(self):
         if not config.APP_PASSWORD:
-            return True
+            # без пароля програма відкривається лише на цьому ж комп'ютері — не в інтернеті
+            return self.is_local_client()
         c = SimpleCookie(self.headers.get("Cookie", ""))
         return "session" in c and valid_session(c["session"].value)
 
     def send_raw(self, status, data, ctype, extra=None):
+        extra = dict(extra or {})
+        if (len(data) > 2048 and "gzip" in (self.headers.get("Accept-Encoding") or "")
+                and ("json" in ctype or ctype.startswith("text/"))):
+            data = gzip.compress(data, 5)
+            extra["Content-Encoding"] = "gzip"
+            extra["Vary"] = "Accept-Encoding"
         self.send_response(status)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
@@ -371,12 +468,13 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "same-origin")
         if self.set_cookie is not None:
-            attrs = "Path=/; HttpOnly; SameSite=Lax" + ("; Secure" if config.COOKIE_SECURE else "")
+            https = config.COOKIE_SECURE or (self.headers.get("X-Forwarded-Proto") or "").lower() == "https"
+            attrs = "Path=/; HttpOnly; SameSite=Lax" + ("; Secure" if https else "")
             if self.set_cookie:
                 self.send_header("Set-Cookie", f"session={self.set_cookie}; Max-Age={SESSION_TTL}; {attrs}")
             else:
                 self.send_header("Set-Cookie", f"session=; Max-Age=0; {attrs}")
-        for k, v in (extra or {}).items():
+        for k, v in extra.items():
             self.send_header(k, v)
         self.end_headers()
         if self.command != "HEAD":
@@ -391,7 +489,7 @@ class Handler(BaseHTTPRequestHandler):
         self._qs = parse_qs(url.query)
         path = url.path
         try:
-            if not path.startswith("/api/") and not path.startswith("/webhook/"):
+            if not path.startswith(("/api/", "/webhook/", "/proxy/")):
                 if method in ("GET", "HEAD"):
                     return self._static(path)
                 raise HttpError(404, "Not found")
@@ -399,13 +497,23 @@ class Handler(BaseHTTPRequestHandler):
                 mt = rx.match(path)
                 if mt and rmethod == method:
                     if not public and not self.authenticated():
+                        if not config.APP_PASSWORD:
+                            raise HttpError(503, "На сервері не задано пароль. Додайте змінну APP_PASSWORD у налаштуваннях сервера.")
                         raise HttpError(401, "Потрібен вхід")
                     body = None
                     if method in ("POST", "PUT", "PATCH", "DELETE"):
                         n = int(self.headers.get("Content-Length") or 0)
-                        if n > 1_000_000:
+                        limit = 100_000_000 if path == "/api/state" else 1_000_000
+                        if n > limit:
                             raise HttpError(413, "Завеликий запит")
                         raw = self.rfile.read(n) if n else b""
+                        if raw and (self.headers.get("Content-Encoding") or "").lower() == "gzip":
+                            try:
+                                raw = gzip.decompress(raw)
+                            except OSError:
+                                raise HttpError(400, "Некоректне стиснення")
+                            if len(raw) > 500_000_000:
+                                raise HttpError(413, "Завеликий запит")
                         # захист від CSRF: для API приймаємо лише JSON
                         if path.startswith("/api/") and raw and "application/json" not in (self.headers.get("Content-Type") or ""):
                             raise HttpError(415, "Очікується application/json")
@@ -418,24 +526,26 @@ class Handler(BaseHTTPRequestHandler):
                         self.send_json(200, result)
                     return
             raise HttpError(404, "Not found")
-        except HttpError as e:
+        except (HttpError, proxy.ProxyError) as e:
             self.send_json(e.status, {"error": str(e)})
         except Exception as e:
             traceback.print_exc()
             self.send_json(500, {"error": f"Внутрішня помилка: {e}"})
 
     def _static(self, path):
-        if path in ("", "/"):
-            path = "/index.html"
-        full = os.path.realpath(os.path.join(config.STATIC_DIR, path.lstrip("/")))
-        if not full.startswith(os.path.realpath(config.STATIC_DIR)) or not os.path.isfile(full):
-            full = os.path.join(config.STATIC_DIR, "index.html")
-        with open(full, "rb") as f:
-            data = f.read()
-        ctype = mimetypes.guess_type(full)[0] or "application/octet-stream"
-        if ctype.startswith("text/") or ctype.endswith("javascript"):
-            ctype += "; charset=utf-8"
-        self.send_raw(200, data, ctype, {"Cache-Control": "no-cache"})
+        """Будь-яка сторінка — це однофайлова програма (docs/index.html) у режимі сервера."""
+        try:
+            with open(config.UI_FILE, "rb") as f:
+                data = f.read()
+        except FileNotFoundError:
+            raise HttpError(500, "Немає docs/index.html — зберіть програму: python3 standalone/build.py")
+        data = data.replace(b'<meta name="fop-mode" content="local">', b'<meta name="fop-mode" content="server">', 1)
+        self.send_raw(200, data, "text/html; charset=utf-8", {
+            "Cache-Control": "no-cache",
+            "Content-Security-Policy": "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; "
+                                       "style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://script.google.com https://script.googleusercontent.com; "
+                                       "frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+        })
 
     def do_GET(self):
         self._dispatch("GET")
@@ -458,6 +568,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
     db.init()
+    store.init()
     if not config.APP_PASSWORD:
         print("⚠  APP_PASSWORD не задано — вхід без пароля. Не відкривайте застосунок в інтернет без пароля!")
     if os.environ.get("DISABLE_SYNC") != "1":

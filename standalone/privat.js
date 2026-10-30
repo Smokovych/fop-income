@@ -1,6 +1,7 @@
-// ============================================================ ПриватБанк (Автоклієнт) через «міст» Google Apps Script
+// ============================================================ ПриватБанк (Автоклієнт)
 // API ПриватБанку не дозволяє браузерним програмам звертатися до нього напряму (немає CORS).
-// Тому запити йдуть через невеликий скрипт у Google-акаунті користувача: він тримає токен,
+// На сервері запити йдуть через сам сервер (/proxy/privat, токен у підключенні).
+// Локально — через невеликий скрипт («міст») у Google-акаунті користувача: він тримає токен,
 // пропускає лише запити на читання балансів і виписок і повертає відповідь банку як є.
 // Документація API: «Опис API для взаємодії з серверною частиною Автоклієнта версія 3.0.0».
 
@@ -43,6 +44,7 @@ function randomKey() {
 }
 
 async function privatGet(conn, path, params = {}) {
+  if (!conn.bridge_url) return privatGetServer(conn, path, params);
   const u = new URL(conn.bridge_url);
   u.searchParams.set("key", conn.bridge_key);
   u.searchParams.set("path", path);
@@ -58,6 +60,21 @@ async function privatGet(conn, path, params = {}) {
     throw new Error("Міст повернув некоректну відповідь");
   }
   if (data.status && data.status !== "SUCCESS") throw new Error("ПриватБанк: " + (data.message || data.status));
+  return data;
+}
+
+async function privatGetServer(conn, path, params) {
+  if (typeof SERVER_MODE === "undefined" || !SERVER_MODE) throw new Error("Це підключення ПриватБанку працює лише на сервері програми");
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) if (v != null && v !== "") q.set(k, v);
+  let r;
+  try { r = await fetch(`/proxy/privat/${path}?${q}`, { headers: { "X-Privat-Token": conn.token }, credentials: "same-origin" }); }
+  catch { throw new Error("Немає зв'язку з сервером програми"); }
+  const data = await r.json().catch(() => null);
+  if (!data) throw new Error("ПриватБанк: некоректна відповідь (HTTP " + r.status + ")");
+  if (data.error && !data.status) throw new Error(data.error);
+  if (data.status && data.status !== "SUCCESS") throw new Error("ПриватБанк: " + (data.message || data.status));
+  if (!r.ok) throw new Error("ПриватБанк: HTTP " + r.status);
   return data;
 }
 
@@ -169,9 +186,44 @@ function privatMonthsLeft() {
 }
 
 // ---------------------------------------------------------------- форма підключення
+// На сервері міст не потрібен: лише токен
+function initPrivatFormServer(f) {
+  f.innerHTML = `<h3>ПриватБанк — автоматично через API</h3>
+    <ol class="steps">
+      <li><b>Токен.</b> Приват24 для бізнесу → «Каталог послуг» → «Інтеграція (Автоклієнт)» → «Підключити API». Поле IP-адрес залиште порожнім. У налаштуваннях застосунку на вкладці «Обмеження по сервісам» увімкніть обмеження й залиште лише «Отримання балансів і транзакцій за рахунками». Скопіюйте токен.</li>
+      <li><b>Вставте токен</b> і натисніть «Підключити»:
+        <input name="token" placeholder="Токен Автоклієнта" autocomplete="off" style="width:100%;margin-top:6px"></li>
+    </ol>
+    <button class="btn primary" type="submit">Підключити</button>`;
+  f.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const token = f.token.value.trim();
+    if (!token) return toast("Вставте токен Автоклієнта", true);
+    if (S.connections.some((c) => c.bank === "privat" && c.token === token)) return toast("Цей токен уже підключено", true);
+    const btn = $("button[type=submit]", f);
+    btn.disabled = true; btn.textContent = "Перевіряю зв'язок з банком…";
+    const conn = { id: 0, bank: "privat", name: "ПриватБанк", bridge_url: null, token, owner_name: null, last_sync_at: null, last_error: null, created_at: nowTs() };
+    try {
+      const accounts = await privatAccounts(conn);
+      if (!accounts.length) throw new Error("Банк не повернув жодного рахунку. Перевірте, що в налаштуваннях API дозволено «Отримання балансів і транзакцій».");
+      conn.id = newId();
+      S.connections.push(conn);
+      upsertAccounts(conn, accounts);
+      log("info", `Додано ПриватБанк, рахунків: ${accounts.length}`);
+      save(true);
+      f.reset();
+      toast(`ПриватБанк підключено, рахунків: ${accounts.length}. Завантажую виписку.`);
+      loadBanks();
+      syncAll(conn.id, true);
+    } catch (err) { toast(err.message, true); }
+    btn.disabled = false; btn.textContent = "Підключити";
+  });
+}
+
 function initPrivatForm() {
   const f = $("#form-privat");
   if (!f) return;
+  if (typeof SERVER_MODE !== "undefined" && SERVER_MODE) return initPrivatFormServer(f);
   // ключ мосту зберігаємо, щоб він не змінився, якщо сторінку перезавантажать посеред налаштування
   if (!S.privatPendingKey) { S.privatPendingKey = randomKey(); save(); }
   let key = S.privatPendingKey;
@@ -195,10 +247,11 @@ function initPrivatForm() {
     if (S.connections.some((c) => c.bridge_url === url)) return toast("Цей міст уже підключено", true);
     const btn = $("button[type=submit]", f);
     btn.disabled = true; btn.textContent = "Перевіряю зв'язок з банком…";
-    const conn = { id: S.nextId++, bank: "privat", name: "ПриватБанк", bridge_url: url, bridge_key: key, token: "", owner_name: null, last_sync_at: null, last_error: null, created_at: nowTs() };
+    const conn = { id: 0, bank: "privat", name: "ПриватБанк", bridge_url: url, bridge_key: key, token: "", owner_name: null, last_sync_at: null, last_error: null, created_at: nowTs() };
     try {
       const accounts = await privatAccounts(conn);
       if (!accounts.length) throw new Error("Банк не повернув жодного рахунку. Перевірте, що в налаштуваннях API дозволено «Отримання балансів і транзакцій».");
+      conn.id = newId();
       S.connections.push(conn);
       upsertAccounts(conn, accounts);
       log("info", `Додано ПриватБанк, рахунків: ${accounts.length}`);

@@ -30,23 +30,43 @@
 
 Зібрати файл заново після змін: `python3 standalone/build.py`.
 
-## Серверна версія (автоматичний ПриватБанк, доступ з будь-якого пристрою)
+## На сервері: одні й ті самі дані на всіх пристроях
 
-Потрібен лише Python 3.10+ — сторонніх бібліотек немає.
+Та сама програма, але дані зберігаються на сервері: телефон, ноутбук і планшет бачать одне й те саме.
+Запити до банків ідуть через сервер, тож ПриватБанку достатньо токена — міст Google не потрібен.
+Виписки тягне лише один пристрій за раз (Monobank дозволяє 1 запит на хвилину), решта отримує
+готові дані. Зміни з різних пристроїв об'єднуються, а не затирають одна одну. Сервер сам робить
+копію даних щонайменше раз на 6 годин (зберігаються останні 30).
+
+### Railway (рекомендовано)
+
+1. Зареєструйтеся на https://railway.com через GitHub і оформіть тариф Hobby ($5/міс).
+2. **New Project → Deploy from GitHub repo →** `fop-income`. Railway збере `Dockerfile`
+   і надалі сам оновлюватиме сервер після кожного коміту в `main`.
+3. У сервісі: **Variables → New Variable** `APP_PASSWORD` = ваш пароль для входу
+   (довгий, ніде більше не використовуваний). Без нього сервер не віддає дані.
+4. Правою кнопкою по сервісу (або Ctrl/Cmd+K) → **Add Volume**, точка монтування `/data`.
+   Тут зберігається база — без тому дані зникнуть при оновленні.
+5. **Settings → Networking → Generate Domain** — отримаєте адресу на кшталт
+   `https://fop-income-production.up.railway.app`.
+6. Відкрийте адресу, увійдіть паролем, на вкладці «Банки» → «Відновити з копії» завантажте
+   резервну копію з браузерної версії.
+
+### Docker на своєму сервері
 
 ```bash
-python3 run.py            # http://localhost:8080
-```
-
-### На сервері (Docker)
-
-```bash
-cp .env.example .env      # задайте APP_PASSWORD і SECRET_KEY
+cp .env.example .env      # задайте APP_PASSWORD
 docker compose up -d --build
 ```
 
-Дані (SQLite) зберігаються у томі `fop-data`. Перед сервером поставте HTTPS-проксі
-(Caddy / nginx / Cloudflare Tunnel) і встановіть `COOKIE_SECURE=1`, `PUBLIC_URL=https://…`.
+Перед сервером поставте HTTPS-проксі (Caddy / nginx / Cloudflare Tunnel).
+
+### Локально
+
+```bash
+python3 standalone/build.py   # збирає інтерфейс у docs/index.html
+python3 run.py                # http://localhost:8080 (без APP_PASSWORD — лише з цього комп'ютера)
+```
 
 ## Підключення банків
 
@@ -77,22 +97,27 @@ docker compose up -d --build
 ## Структура
 
 ```
+standalone/        інтерфейс — одна програма для всіх режимів
+  app.js             облік, класифікація, податки, Monobank, імпорт файлів
+  privat.js          ПриватБанк (через міст Google або через сервер)
+  remote.js          режим сервера: вхід, спільні дані, злиття змін, замок синхронізації
+  commission.js      комісія еквайрингу з призначення платежу
+  template.html, build.py   збирання в один файл → dist/ і docs/index.html
+static/styles.css  стилі
 app/
-  server.py        HTTP-сервер, JSON API, авторизація
-  sync.py          синхронізація виписок, фоновий планувальник, вебхук Monobank
-  banks/monobank.py, banks/privatbank.py   клієнти банківських API
-  classify.py      правила «дохід / не дохід»
-  tax.py           ліміт, ЄП, ВЗ, ЄСВ, строки, книга обліку
-  nbu.py           курси НБУ (кешуються)
-  db.py            схема SQLite
-static/            інтерфейс (HTML/CSS/JS без збірки)
-tests/             тести + мок-сервер банків
+  server.py        HTTP-сервер: віддає docs/index.html, вхід, API
+  store.py         спільне сховище стану з версіями та автоматичними копіями
+  proxy.py         запити до Monobank, ПриватБанку, НБУ (лише читання)
+  sync.py, banks/, classify.py, tax.py, nbu.py, db.py   серверна синхронізація (основа для фонового оновлення)
+tests/             тести сервера + мок-сервер банків; merge.test.js — злиття змін
+Dockerfile, railway.json   розгортання
 ```
 
 ## Тести і демо без справжніх токенів
 
 ```bash
 python3 -m unittest discover -s tests -v
+node tests/merge.test.js
 
 # демо з вигаданими даними:
 python3 -m tests.mock_banks 8090 &

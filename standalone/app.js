@@ -1,7 +1,7 @@
 "use strict";
 /* ФОП-дохід — версія, що працює повністю в браузері.
-   Monobank і курси НБУ — напряму через їхні API; ПриватБанк та інші — імпорт файлу виписки.
-   Усі дані зберігаються в localStorage цього браузера. */
+   Monobank і курси НБУ — напряму через їхні API; ПриватБанк — через міст або сервер; інші — імпорт файлу виписки.
+   Локально дані зберігаються в localStorage цього браузера, на сервері — на сервері (див. remote.js). */
 
 // ============================================================ утиліти
 const $ = (s, el = document) => el.querySelector(s);
@@ -23,7 +23,7 @@ const API = Object.assign({
   mono: "https://api.monobank.ua",
   nbu: "https://bank.gov.ua/NBUStatService/v1/statdirectory/exchange",
   monoInterval: 61000,
-}, (() => { try { return JSON.parse(localStorage.getItem("fopIncome.api") || "{}"); } catch { return {}; } })());
+}, SERVER_MODE ? { mono: "/proxy/mono", nbu: "/proxy/nbu" } : {}, (() => { try { return JSON.parse(localStorage.getItem("fopIncome.api") || "{}"); } catch { return {}; } })());
 
 const KYIV_FMT = new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Kyiv", year: "numeric", month: "2-digit", day: "2-digit" });
 const kyivDate = (ts) => KYIV_FMT.format(new Date(ts * 1000)); // YYYY-MM-DD
@@ -94,11 +94,20 @@ function freshState() {
   };
 }
 
-function load() {
-  try {
-    const raw = localStorage.getItem(STORE_KEY);
-    S = raw ? JSON.parse(raw) : freshState();
-  } catch { S = freshState(); }
+// Новий id для підключень і правил: часова мітка, щоб два пристрої не видали однаковий id
+function newId() {
+  S.nextId = Math.max((S.nextId || 0) + 1, Date.now());
+  return S.nextId;
+}
+
+function load(data) {
+  if (data !== undefined) S = data ? JSON.parse(JSON.stringify(data)) : freshState();
+  else {
+    try {
+      const raw = localStorage.getItem(STORE_KEY);
+      S = raw ? JSON.parse(raw) : freshState();
+    } catch { S = freshState(); }
+  }
   const f = freshState();
   for (const k of Object.keys(f)) if (S[k] === undefined) S[k] = f[k];
   for (const [y, p] of Object.entries(DEFAULT_TAX)) if (!S.taxParams[y]) S.taxParams[y] = { ...p };
@@ -106,6 +115,7 @@ function load() {
 
 let saveTimer, allowWipe = false;
 function save(now = false) {
+  if (SERVER_MODE) return remoteSave(now);
   clearTimeout(saveTimer);
   const doSave = () => {
     try {
@@ -297,7 +307,7 @@ function upsertAccounts(conn, accounts) {
 async function addMono(token) {
   setStatus("Перевіряю токен Monobank…");
   const info = await monoClientInfo(token);
-  const conn = { id: S.nextId++, bank: "mono", name: `Monobank — ${info.name}`, token, owner_name: info.name, last_sync_at: null, last_error: null, created_at: nowTs() };
+  const conn = { id: newId(), bank: "mono", name: `Monobank — ${info.name}`, token, owner_name: info.name, last_sync_at: null, last_error: null, created_at: nowTs() };
   S.connections.push(conn);
   upsertAccounts(conn, info.accounts);
   if (!S.settings.owner_name) S.settings.owner_name = info.name;
@@ -397,9 +407,15 @@ function renderBanner() {
 }
 document.addEventListener("click", (e) => { if (e.target.id === "banner-resume") syncAll(); });
 
-async function syncAll(onlyConnId) {
+async function syncAll(onlyConnId, userInitiated = false) {
   if (syncing) { syncQueued = true; return; }
   syncing = true;
+  if (!(await acquireSyncLock())) {
+    syncing = false;
+    setStatus("");
+    if (userInitiated) toast("Виписки зараз оновлює інший ваш пристрій. Нові операції з'являться тут автоматично.");
+    return;
+  }
   renderBanner();
   try {
     for (const conn of S.connections) {
@@ -432,6 +448,7 @@ async function syncAll(onlyConnId) {
     }
     await fillMissingRates();
   } finally {
+    releaseSyncLock();
     syncing = false;
     syncProgress.current = null;
     setStatus("");
@@ -969,7 +986,7 @@ function loadBanks() {
   $("#connections").innerHTML = (groups.map(({ conn: c, accounts }) => `
     <div class="card conn" data-id="${c.id}">
       <div class="conn-head"><div><h3>${esc(c.name)}</h3>
-        <div class="muted small">${c.bank === "privat" ? "Через міст Google Apps Script" : `Токен ${esc(c.token.slice(0, 4))}…${esc(c.token.slice(-4))}`} · ${c.last_sync_at ? "оновлено " + new Date(c.last_sync_at * 1000).toLocaleString("uk-UA") : "ще не оновлювалось"}</div>
+        <div class="muted small">${c.bridge_url ? "Через міст Google Apps Script" : `Токен ${esc(c.token.slice(0, 4))}…${esc(c.token.slice(-4))}`} · ${c.last_sync_at ? "оновлено " + new Date(c.last_sync_at * 1000).toLocaleString("uk-UA") : "ще не оновлювалось"}</div>
         ${c.last_error ? `<div class="error small">Помилка: ${esc(c.last_error)}</div>` : ""}</div>
         <div class="conn-actions"><button class="btn" data-act="sync">Оновити виписку</button><button class="btn danger" data-act="delete">Видалити</button></div></div>
       ${accTable(accounts, true)}</div>`).join("")
@@ -990,7 +1007,7 @@ $("#connections").addEventListener("click", (e) => {
   const act = e.target.dataset.act;
   if (!act) return;
   const id = Number(e.target.closest(".conn").dataset.id);
-  if (act === "sync") { syncAll(id); toast("Оновлення запущено"); }
+  if (act === "sync") { syncAll(id, true); toast("Оновлення запущено"); }
   if (act === "delete") {
     if (!confirm("Видалити підключення разом з усіма його операціями?")) return;
     S.connections = S.connections.filter((c) => c.id !== id);
@@ -1042,20 +1059,22 @@ $("#restore-file").addEventListener("change", async (e) => {
   try {
     const data = JSON.parse(await file.text());
     if (!data.tx || !data.accounts) throw new Error("Це не резервна копія ФОП-доходу");
-    if (!confirm("Замінити поточні дані даними з резервної копії?")) return;
-    S = Object.assign(freshState(), data);
+    if (!confirm(SERVER_MODE ? "Замінити дані на сервері (на всіх пристроях) даними з резервної копії?" : "Замінити поточні дані даними з резервної копії?")) return;
+    const fresh = Object.assign(freshState(), data);
+    if (SERVER_MODE) { for (const k of Object.keys(S)) delete S[k]; Object.assign(S, fresh); } else S = fresh;
     save(true); toast("Дані відновлено"); openTab("overview");
   } catch (err) { toast(err.message, true); }
   e.target.value = "";
 });
 $("#btn-wipe").addEventListener("click", () => {
   if (!confirm("Видалити всі дані та токени з цього браузера? Без резервної копії їх не повернути.")) return;
-  S = freshState(); allowWipe = true; save(true); allowWipe = false; toast("Усі дані видалено"); openTab("overview");
+  if (SERVER_MODE) { for (const k of Object.keys(S)) delete S[k]; Object.assign(S, freshState()); R.wipe = true; } else S = freshState();
+  allowWipe = true; save(true); allowWipe = false; toast("Усі дані видалено"); openTab("overview");
 });
 
 $("#btn-sync-all").addEventListener("click", () => {
   if (!S.connections.length) return toast("Немає підключених через API банків. Додайте Monobank або ПриватБанк на вкладці «Банки».");
-  syncAll(); toast("Оновлення запущено");
+  syncAll(null, true); toast("Оновлення запущено");
 });
 
 // ============================================================ правила
@@ -1076,7 +1095,7 @@ $("#form-rule").addEventListener("submit", (e) => {
   e.preventDefault();
   const d = Object.fromEntries(new FormData(e.target));
   if (!d.pattern.trim()) return;
-  S.rules.push({ id: S.nextId++, pattern: d.pattern.trim(), field: d.field, direction: d.direction, category: d.category, priority: 50 });
+  S.rules.push({ id: newId(), pattern: d.pattern.trim(), field: d.field, direction: d.direction, category: d.category, priority: 50 });
   e.target.reset();
   toast(`Правило додано, перекласифіковано: ${reclassifyAll()}`);
   loadRules();
@@ -1114,7 +1133,14 @@ $("#params-table").addEventListener("click", (e) => {
 });
 
 // ============================================================ старт
-load();
+async function boot() {
+if (SERVER_MODE) {
+  try { await remoteBoot(); }
+  catch (e) {
+    document.body.innerHTML = `<div class="login"><div class="card login-card"><h1>ФОП-дохід</h1><p class="error">${esc(e.message)}</p><button class="btn primary" onclick="location.reload()">Спробувати ще раз</button></div></div>`;
+    return;
+  }
+} else load();
 if (S.commissionParser !== COMMISSION_PARSER_VERSION) {
   for (const t of Object.values(S.tx)) detectCommission(t);
   S.commissionParser = COMMISSION_PARSER_VERSION;
@@ -1130,4 +1156,6 @@ setStatus("");
 renderBanner();
 if (S.connections.length) setTimeout(() => syncAll(), 500);
 setInterval(() => { if (S.connections.length) syncAll(); }, 60 * 60 * 1000);
-window.__fop = { get S() { return S; }, summary, syncAll }; // для діагностики
+}
+boot();
+window.__fop = { get S() { return S; }, summary, syncAll, R }; // для діагностики
