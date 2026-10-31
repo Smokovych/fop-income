@@ -24,6 +24,7 @@
       <nav class="tabs" id="tabs">
         <button data-tab="overview" class="active">Огляд</button>
         <button data-tab="transactions">Операції <span class="badge" id="review-badge" title="Надходження, що чекають підтвердження" hidden></span></button>
+        <button data-tab="taxes">Податки</button>
         <button data-tab="banks">Банки</button>
         <button data-tab="account">Облікові дані</button>
         <button data-tab="rules">Правила</button>
@@ -108,6 +109,30 @@
           <div class="table-wrap"><table class="table tx-table" id="tx-table"></table></div>
           <div class="pager"><button class="btn" id="btn-more">Показати ще</button></div>
         </div>
+      </section>
+
+      <!-- ПОДАТКИ -->
+      <section id="tab-taxes" class="tab hidden">
+        <div class="section-head">
+          <h2>Податки</h2>
+          <div class="conn-actions"><span id="taxes-meta" class="muted small"></span>
+            <button class="btn primary" type="button" id="btn-taxes-refresh">Оновити з Кабінету</button></div>
+        </div>
+        <div id="taxes-error" class="warn" hidden></div>
+        <nav class="subtabs" id="taxes-tabs"></nav>
+        <div id="taxes-body"></div>
+        <dialog id="tax-req-dialog" class="req-dialog">
+          <div class="card-head"><h3 id="req-title">Реквізити</h3><button type="button" class="btn ghost" id="req-close">✕</button></div>
+          <div class="req-grid">
+            <dl class="kv" id="req-fields"></dl>
+            <div class="req-qr-col">
+              <div id="req-qr" class="req-qr"></div>
+              <label class="field">Сума, грн<input id="req-amount" inputmode="decimal" placeholder="0,00"></label>
+              <a class="btn primary" id="req-pay" href="#" target="_blank" rel="noopener">Сплатити</a>
+              <p class="muted small">Відскануйте QR-код у застосунку банку або натисніть «Сплатити» — відкриється ваш банк із заповненим платежем. Перевірте суму перед підтвердженням.</p>
+            </div>
+          </div>
+        </dialog>
       </section>
 
       <!-- ОБЛІКОВІ ДАНІ -->

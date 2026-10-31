@@ -11,17 +11,17 @@
 
 const TAX_ALLOWED_HINT = "payer_card, payer_card/{група}";
 
-const TAX_BRIDGE_VERSION = 2;
+const TAX_BRIDGE_VERSION = 3;
 
 function taxBridgeCode(key) {
   const cmpUrls = typeof FopKep !== "undefined" ? FopKep.CMP_URLS : [];
   return `// Міст ФОП-дохід → Електронний кабінет платника (лише читання облікових даних)
-// + пошук сертифіката вашого ключа на сервері надавача (CMP), як це робить сайт Кабінету
+// + стан розрахунків з бюджетом; пошук сертифіката вашого ключа на сервері надавача (CMP), як це робить сайт Кабінету
 const ACCESS_KEY = ${JSON.stringify(key)};
 const VERSION = ${TAX_BRIDGE_VERSION};
 const BASE = 'https://cabinet.tax.gov.ua/ws/public_api/';
-const ALLOWED = /^payer_card(\\/\\d{1,2})?$/;
-const PARAMS = ['page', 'size'];
+const ALLOWED = /^(payer_card(\\/\\d{1,2})?|ta\\/splatp(\\/\\d{4}\\/\\d{1,6}\\/[0-9A-Za-z]{8,64}\\/pa)?)$/;
+const PARAMS = ['page', 'size', 'year'];
 const CMP = ${JSON.stringify(cmpUrls)};
 
 function doGet(e) {
@@ -418,7 +418,7 @@ async function refreshPayerCard() {
     }
     btn.disabled = true; btn.textContent = "Сервер оновлює…";
     rememberTin();
-    try { await serverTaxRefresh(); toast("Облікові дані оновлено"); }
+    try { await serverTaxRefresh(); toast("Дані з Кабінету оновлено"); }
     catch (e) { toast(e.message, true); }
     btn.disabled = false; btn.textContent = "Оновити з Кабінету";
     loadAccount();
@@ -432,8 +432,12 @@ async function refreshPayerCard() {
   }
   btn.disabled = true; btn.textContent = "Підписую й завантажую…";
   try {
-    const card = await fetchPayerCard(await getAuth());
+    const auth = await getAuth();
+    const card = await fetchPayerCard(auth);
     S.tax.card = card;
+    // стан розрахунків з бюджетом (вкладка «Податки») — помилка тут не скасовує облікові дані
+    try { S.tax.budget = await fetchBudget(auth, Number(kyivDate(nowTs()).slice(0, 4))); }
+    catch (e) { S.tax.budget = Object.assign(S.tax.budget || {}, { error: "Стан розрахунків: " + e.message }); }
     S.tax.fetched_at = nowTs();
     S.tax.last_error = null;
     // ПІБ і РНОКПП потрібні, щоб не рахувати доходом власні перекази

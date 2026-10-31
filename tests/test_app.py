@@ -346,7 +346,14 @@ class T6_SharedState(T5_Http):
         self.assertEqual(json.loads(d["body"])["idGroup"], 14)
         d = json.loads(tb({"path": "payer_card", "auth": "A" * 100 + "=="})[1])  # підпис замалий для «Кабінету»
         self.assertEqual(d["http"], 401)
-        self.assertEqual(tb({"path": "ta/splatp", "auth": "A" * 200})[0], 403)          # лише облікові дані
+        # стан розрахунків з бюджетом — дозволено; інші розділи Кабінету — ні
+        d = json.loads(tb({"path": "ta/splatp", "params": {"year": 2026}, "auth": "A" * 200})[1])
+        self.assertEqual(json.loads(d["body"])[2]["plat1"], "30 18050400 00")
+        d = json.loads(tb({"path": "ta/splatp/2026/2659/SINGLE01/pa", "params": {"page": 0}, "auth": "A" * 200})[1])
+        self.assertEqual(d["status"], "SUCCESS")
+        self.assertEqual(tb({"path": "ta/splatp/2026/2659/E2F2B841AF30059EE0430A2142061006/pa", "auth": "A" * 200})[0], 200)
+        self.assertEqual(tb({"path": "ta/debt", "auth": "A" * 200})[0], 403)
+        self.assertEqual(tb({"path": "ta/splatp/../../post/sent", "auth": "A" * 200})[0], 403)
         self.assertEqual(tb({"path": "payer_card", "auth": "bad auth!"})[0], 400)
         # CMP: лише адреси надавачів зі списку; відповідь — base64
         mock_banks.CMP_RESPONSE = b"\x30\x03\x02\x01\x01"

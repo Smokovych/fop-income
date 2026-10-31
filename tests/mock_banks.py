@@ -106,6 +106,27 @@ PRIVAT = _gen_privat()
 NBU_USD = 41.0
 CMP_RESPONSE = None  # байти відповіді CMP для тестів
 
+def _plat(kbk, name, idp, narah, spl, nedoim=0, perepl=0):
+    return {"idpmnt": idp, "yearoper": YEAR, "cSti": 2659, "nameSti": "ГУ ДПС У М.КИЄВІ", "facemode": 2, "tinS": "1234567890",
+            "payerName": "ШЕВЧЕНКО МИХАЙЛО", "plat1": f"30 {kbk} 00", "budgetTin": 37993783, "budgetPayerName": f"ГУК у м.Києві/Шевченк.р-н/{kbk}",
+            "budgetMfo": 899998, "budgetBankName": "Казначейство України(ел. адм. подат.)", "budgetAccount": 31115063026011,
+            "budgetAccountIban": "UA058999980000031115063026011", "namePlt": name, "narah0": narah, "splbd0": spl, "povbd0": 0,
+            "penia0": 0, "nedoim0": nedoim, "perepl0": perepl, "sldpn0": 0, "debtAll": nedoim}
+
+BUDGET = [_plat("11010100", "ПОДАТОК НА ДОХОДИ ФIЗИЧНИХ ОСIБ", "PDFOPDF1", 1200, 1200),
+          _plat("71040000", "ЄДИНИЙ ВНЕСОК НА ЗАГАЛЬНООБОВ'ЯЗКОВЕ ДЕРЖАВНЕ СОЦIАЛЬНЕ СТРАХУВАННЯ", "ESVESV01", 17121.06, 17121.06),
+          _plat("18050400", "ЄДИНИЙ ПОДАТОК З ФIЗИЧНИХ ОСIБ", "SINGLE01", 160000, 150000, nedoim=10000),
+          _plat("21081100", "АДМIНIСТРАТИВНI ШТРАФИ", "FINEFINE", 0, 0),
+          _plat("11011000", "ВIЙСЬКОВИЙ ЗБIР", "MILITAR1", 32000, 33000, perepl=1000)]
+BUDGET_OPS = {
+    "SINGLE01": [{"rn": 299912000000, "dateoper": None, "vidpa": "Всього", "splpov0": 150000},
+           {"rn": 1, "dateoper": "19.05.2026", "vidpa": "101", "namevid": "Сплата суми податків", "narah0": None, "splpov0": 50000, "templ": "Платiжне доручення N 1"},
+           {"rn": 2, "dateoper": "11.05.2026", "vidpa": "001", "namevid": "Нараховано за декларацією", "narah0": 60000, "splpov0": None},
+           {"rn": 3, "dateoper": "19.08.2026", "vidpa": "101", "namevid": "Сплата суми податків", "splpov0": 100000},
+           {"rn": 4, "dateoper": "10.08.2026", "vidpa": "001", "namevid": "Нараховано за декларацією", "narah0": 100000}],
+    "MILITAR1": [{"rn": 1, "dateoper": "19.05.2026", "vidpa": "101", "namevid": "Сплата суми податків", "splpov0": 33000}],
+}
+
 
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a):
@@ -181,6 +202,17 @@ class H(BaseHTTPRequestHandler):
             more = off + lim < len(items)
             return self._json({"status": "SUCCESS", "type": "transactions", "exist_next_page": more,
                                "next_page_id": str(off + lim) if more else None, "transactions": page})
+        if p.startswith("/tax/ta/splatp"):  # імітація стану розрахунків з бюджетом
+            if len(self.headers.get("Authorization") or "") < 150:
+                return self._json({"error": "invalid_token"}, 401)
+            if p == "/tax/ta/splatp":
+                return self._json(BUDGET)
+            idp = p.split("/")[-2]
+            ops = BUDGET_OPS.get(idp, [])
+            page, size = int(qs.get("page", 0)), 3
+            chunk = ops[page * size:(page + 1) * size]
+            return self._json({"content": chunk, "number": page, "size": size, "totalPages": max(1, -(-len(ops) // size)),
+                               "last": (page + 1) * size >= len(ops)})
         if p.startswith("/tax/payer_card"):  # імітація Кабінету: приймає будь-який підпис довжиною від 150
             auth = self.headers.get("Authorization") or ""
             if len(auth) < 150:

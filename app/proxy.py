@@ -31,8 +31,8 @@ _CMP_HOSTS = ["ca.monobank.ua/services/cmp/", "acsk.privatbank.ua", "ca.diia.gov
               "acsk.oree.com.ua", "canbu.bank.gov.ua", "ca.mil.gov.ua", "acsk.dpsu.gov.ua", "ca.ngu.gov.ua", "ca.mvs.gov.ua",
               "ca.szru.gov.ua", "ca.gp.gov.ua/cmp", "va1-knedp.ssu.gov.ua/services/cmp/"]
 CMP_URLS = ["http://" + (h if "/" in h else h + "/services/cmp/") for h in _CMP_HOSTS]
-TAX_ALLOWED = re.compile(r"^payer_card(/\d{1,2})?$")
-TAX_PARAMS = ("page", "size")
+TAX_ALLOWED = re.compile(r"^(payer_card(/\d{1,2})?|ta/splatp(/\d{4}/\d{1,6}/[0-9A-Za-z]{8,64}/pa)?)$")
+TAX_PARAMS = ("page", "size", "year")
 
 
 class ProxyError(Exception):

@@ -13,7 +13,7 @@ const vm = require("vm");
 const nodeCrypto = require("crypto");
 
 const ROOT = path.resolve(__dirname, "..", "..");
-const SOURCES = ["vendor/kep.bundle.js", "commission.js", "privat.js", "sync.js", "tax.js"];
+const SOURCES = ["vendor/kep.bundle.js", "commission.js", "privat.js", "sync.js", "tax.js", "budget.js"];
 
 function readStdin() {
   return new Promise((resolve, reject) => {
@@ -81,7 +81,7 @@ function makeContext(api) {
       catch (e) { throw new Error("Сервер не зміг з'єднатися з Кабінетом: " + e.message); }
       return { status: "SUCCESS", http: r.status, body: await r.text() };
     }
-    this.__fop = { get S() { return S; }, load, syncAll, fetchPayerCard, taxSummary, reclassifyAll, log };`;
+    this.__fop = { get S() { return S; }, load, syncAll, fetchPayerCard, fetchBudget, taxSummary, reclassifyAll, log, kyivDate, nowTs };`;
   const code = pre + SOURCES.map((f) => fs.readFileSync(path.join(ROOT, "standalone", f), "utf8")).join("\n;\n") + post;
   ctx.atob = (s) => Buffer.from(s, "base64").toString("binary");
   ctx.btoa = (s) => Buffer.from(s, "binary").toString("base64");
@@ -129,6 +129,8 @@ async function main() {
       if (!/^\d{8,10}$/.test(String(tin || ""))) throw new Error("У сертифікаті ключа немає РНОКПП — вкажіть його в Налаштуваннях");
       const auth = await key.sign(String(tin));   // підписується лише РНОКПП
       S.tax.card = await F.fetchPayerCard(auth);
+      try { S.tax.budget = await F.fetchBudget(auth, Number(F.kyivDate(F.nowTs()).slice(0, 4))); }
+      catch (e) { S.tax.budget = Object.assign(S.tax.budget || {}, { error: "Стан розрахунків: " + e.message }); }
       S.tax.fetched_at = Math.floor(Date.now() / 1000);
       S.tax.last_error = null;
       const s = F.taxSummary();

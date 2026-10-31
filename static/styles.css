@@ -318,3 +318,34 @@ p.small.warn { padding: 8px 12px; }
 .history-panel { margin-bottom: 12px; }
 .history-panel .inline-form { align-items: center; }
 .history-panel select { width: auto; }
+
+/* ---------- податки ---------- */
+.subtabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+.subtabs button { font: inherit; padding: 7px 12px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface); color: var(--text-2); cursor: pointer; }
+.subtabs button.active { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.danger-badge { background: var(--bad); }
+.kpis.kpis-3 { grid-template-columns: repeat(3, 1fr); }
+.kpi-bad .value { color: var(--bad); }
+.kpi-good .value { color: var(--good); }
+.taxes-actions { margin: 12px 0; align-items: center; }
+.req-dialog { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text); padding: 18px; width: min(820px, calc(100vw - 32px)); }
+.req-dialog::backdrop { background: rgba(0, 0, 0, .45); }
+.req-grid { display: grid; grid-template-columns: 1fr 240px; gap: 18px; }
+.req-qr-col { display: flex; flex-direction: column; gap: 10px; }
+.req-qr { background: #fff; border-radius: 8px; padding: 6px; }
+.req-qr svg { width: 100%; height: auto; display: block; }
+#req-fields dd { display: flex; gap: 6px; align-items: flex-start; }
+#req-fields dd span { flex: 1; overflow-wrap: anywhere; }
+.copy-btn { flex: none; font: inherit; font-size: 15px; line-height: 1; padding: 3px 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text-2); cursor: pointer; }
+.copy-btn:hover { color: var(--accent); border-color: var(--accent); }
+@media (max-width: 720px) {
+  .kpis.kpis-3 { grid-template-columns: 1fr; }
+  .req-grid { grid-template-columns: 1fr; }
+  .req-qr-col { max-width: 260px; }
+  .budget-table thead { display: none; }
+  .budget-table, .budget-table tbody, .budget-table tr, .budget-table td { display: block; }
+  .budget-table tr { padding: 10px 14px; border-bottom: 1px solid var(--border); }
+  .budget-table td { border: 0; padding: 0; text-align: left; }
+  .budget-table td.num:empty { display: none; }
+  .budget-table td.num::before { content: attr(data-label) ": "; color: var(--muted); }
+}
