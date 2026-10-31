@@ -17,7 +17,7 @@ from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote
 
-from . import config, db, tax, store, proxy
+from . import config, db, tax, store, proxy, bg
 from .classify import reclassify_all
 from .sync import worker, add_connection, set_mono_webhook, handle_mono_webhook, refresh_accounts
 
@@ -140,6 +140,47 @@ def px_mono(h, m, body):
 def px_privat(h, m, body):
     q = {k: v[0] for k, v in h._qs.items()}
     _proxied(h, proxy.privat(m["path"], q, h.headers.get("X-Privat-Token", "")))
+
+
+# ======================================================================= фонове оновлення і ключ КЕП
+
+def _bg(fn, *a):
+    try:
+        return fn(*a)
+    except bg.WorkerError as e:
+        raise HttpError(409, str(e))
+
+
+@route("GET", "/api/server-status")
+def api_server_status(h, m, body):
+    return {"node": bg.node_available(), "secret": len(bg.kep_secret()) >= 16, "interval_min": config.SYNC_INTERVAL_MIN,
+            "bg": bg.status, "kep": bg.kep_get()}
+
+
+@route("POST", "/api/kep")
+def api_kep_save(h, m, body):
+    body = body or {}
+    files = body.get("files") or []
+    if not isinstance(files, list) or not files or len(files) > 5 or not all(isinstance(f, str) and len(f) < 200_000 for f in files):
+        raise HttpError(400, "Оберіть файл ключа")
+    info = _bg(bg.kep_save, files, str(body.get("password") or ""))
+    try:
+        tax_state = bg.tax_refresh()
+    except bg.WorkerError as e:
+        tax_state = {"last_error": str(e)}
+    return {"info": info, "tax": {"fetched_at": tax_state.get("fetched_at"), "last_error": tax_state.get("last_error")}}
+
+
+@route("DELETE", "/api/kep")
+def api_kep_delete(h, m, body):
+    bg.kep_delete()
+    return {"ok": True}
+
+
+@route("POST", "/api/tax/refresh")
+def api_tax_refresh(h, m, body):
+    t = _bg(bg.tax_refresh)
+    return {"fetched_at": t.get("fetched_at"), "last_error": t.get("last_error")}
 
 
 @route("POST", "/proxy/tax-bridge")
@@ -574,10 +615,11 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     db.init()
     store.init()
+    bg.init()
     if not config.APP_PASSWORD:
         print("⚠  APP_PASSWORD не задано — вхід без пароля. Не відкривайте застосунок в інтернет без пароля!")
     if os.environ.get("DISABLE_SYNC") != "1":
-        worker.start()
+        bg.start()  # фонове оновлення виписок і облікових даних (стара серверна модель sync.worker більше не запускається)
     srv = ThreadingHTTPServer((config.HOST, config.PORT), Handler)
     print(f"ФОП-дохід працює: http://localhost:{config.PORT}")
     try:

@@ -22,6 +22,8 @@ os.environ.update({
     "NBU_API": f"http://127.0.0.1:{MOCK_PORT}/nbu",
     "TAX_API": f"http://127.0.0.1:{MOCK_PORT}/tax",
     "CMP_TEST_URL": f"http://127.0.0.1:{MOCK_PORT}/cmp",
+    "SECRET_KEY": "test-secret-key-0123456789",
+    "KEP_TEST_SKIP_EXPIRY": "1",
     "MONO_MIN_INTERVAL_SEC": "0",
     "APP_PASSWORD": "secret-pass",
     "PUBLIC_URL": "https://fop.example.com",
@@ -231,8 +233,9 @@ class T6_SharedState(T5_Http):
     @classmethod
     def setUpClass(cls):
         from http.server import ThreadingHTTPServer
-        from app import store
+        from app import store, bg
         store.init()
+        bg.init()
         cls.srv = ThreadingHTTPServer(("127.0.0.1", APP_PORT + 1), server.Handler)
         threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
         cls.base = f"http://127.0.0.1:{APP_PORT + 1}"
@@ -358,6 +361,89 @@ class T6_SharedState(T5_Http):
         self.assertIn("frame-ancestors 'none'", h["Content-Security-Policy"])
         st, body, _ = self.req("GET", "/some/page")
         self.assertIn(b"fop-mode", body)
+
+
+@unittest.skipUnless(__import__("shutil").which("node"), "потрібен Node.js")
+class T7_Background(unittest.TestCase):
+    """Фоновий воркер (Node): оновлення виписок, зберігання ключа КЕП, облікові дані з Кабінету."""
+
+    @classmethod
+    def setUpClass(cls):
+        from app import store, bg
+        store.init()
+        bg.init()
+        cls.store, cls.bg = store, bg
+        cur = store.get()
+        state = {"settings": {"owner_name": "", "owner_tax_id": "1234567890", "sync_start": "2026-01-01", "esv_enabled": True},
+                 "taxParams": {}, "rules": [], "rates": {}, "log": [], "nextId": 100, "tax": {}, "rulesVersion": 2,
+                 "connections": [{"id": 1, "bank": "mono", "name": "Monobank", "token": "t", "last_sync_at": None, "last_error": None},
+                                 {"id": 2, "bank": "privat", "name": "ПриватБанк", "bridge_url": None, "token": "pt",
+                                  "last_sync_at": None, "last_error": None}],
+                 "accounts": {"keep:me": {"id": "keep:me", "bank": "file", "name": "x"}}, "tx": {}}
+        store.put(state, cur["version"], device="test", wipe=True)
+
+    def test_a_sync_banks_merges_with_concurrent_edit(self):
+        before = self.store.get()
+        self.assertTrue(self.bg.sync_banks())
+        after = self.store.get()["state"]
+        self.assertGreater(len(after["tx"]), 800)
+        self.assertTrue(all(c["last_sync_at"] for c in after["connections"]))
+        self.assertTrue(any(k.startswith("privat:") for k in after["tx"]))
+        # правка користувача між читанням і записом воркера не губиться
+        tx_id = next(k for k in after["tx"] if k.startswith("mono:"))
+        user = json_copy(after)
+        user["tx"][tx_id]["manual_category"] = "loan"
+        user["settings"]["owner_name"] = "Користувач"
+        v = self.store.put(user, self.store.get()["version"], device="phone")
+        base = self.store.get()["state"]
+        worker_result = json_copy(base)
+        worker_result["tx"][tx_id]["auto_reason"] = "оновлено воркером"
+        worker_result["tx"]["mono:new-1"] = {"id": "mono:new-1", "amount": 1}
+        base_old = json_copy(base); base_old["settings"]["owner_name"] = ""; base_old["tx"][tx_id]["manual_category"] = None
+        worker_from_old = json_copy(base_old); worker_from_old["tx"][tx_id]["auto_reason"] = "оновлено воркером"
+        worker_from_old["tx"]["mono:new-1"] = {"id": "mono:new-1", "amount": 1}
+        self.bg.apply_result(base_old, worker_from_old)
+        st = self.store.get()["state"]
+        self.assertEqual(st["tx"][tx_id]["manual_category"], "loan")
+        self.assertEqual(st["tx"][tx_id]["auto_reason"], "оновлено воркером")
+        self.assertEqual(st["settings"]["owner_name"], "Користувач")
+        self.assertIn("mono:new-1", st["tx"])
+        self.assertIn("keep:me", st["accounts"])
+        self.assertGreater(self.store.get()["version"], v)
+
+    def test_b_server_lock_blocks_browser(self):
+        self.assertTrue(self.store.acquire_sync("server", ttl=60)["granted"])
+        self.assertFalse(self.store.acquire_sync("phone")["granted"])
+        self.store.release_sync("server")
+        self.assertTrue(self.store.acquire_sync("phone")["granted"])
+        self.store.release_sync("phone")
+
+    def test_c_kep_store_and_tax_refresh(self):
+        import base64
+        fx = os.environ.get("KEP_FIXTURES") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "kep")
+        if not fx:
+            self.skipTest("немає тестових ключів (KEP_FIXTURES)")
+        mock_banks.CMP_RESPONSE = base64.b64decode(open(os.path.join(fx, "cmp_resp.b64")).read())
+        files = [base64.b64encode(open(os.path.join(fx, "key.pfx"), "rb").read()).decode()]
+        with self.assertRaises(self.bg.WorkerError):
+            self.bg.kep_save(files, "wrong")
+        info = self.bg.kep_save(files, "test-pass")
+        self.assertEqual(info["issuer"], "Very Much CA")
+        row = db.q1("SELECT blob FROM kep_store WHERE id=1")
+        self.assertNotIn("test-pass", base64.b64decode(row["blob"]).decode())
+        self.assertNotIn("kep", json.dumps(self.store.get()["state"]).lower().replace("kepkey", ""))  # ключа немає в даних програми
+        tax = self.bg.tax_refresh()
+        self.assertIsNone(tax.get("last_error"))
+        st = self.store.get()["state"]
+        self.assertEqual(st["tax"]["card"][0]["values"]["TIN"], "1234567890")
+        self.assertTrue(st["tax"]["cert_b64"])
+        self.assertTrue(self.bg.kep_get()["stored"])
+        self.bg.kep_delete()
+        self.assertFalse(self.bg.kep_get()["stored"])
+
+
+def json_copy(x):
+    return json.loads(json.dumps(x))
 
 
 import urllib.error  # noqa: E402

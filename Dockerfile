@@ -1,11 +1,13 @@
 FROM python:3.12-slim
 
-RUN apt-get update && apt-get install -y --no-install-recommends tzdata ca-certificates \
+# Node.js — для фонового воркера (app/node/worker.js), що виконує код програми з standalone/
+RUN apt-get update && apt-get install -y --no-install-recommends tzdata ca-certificates nodejs \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY app ./app
 COPY docs ./docs
+COPY standalone ./standalone
 COPY run.py ./
 
 ENV PYTHONUNBUFFERED=1 \

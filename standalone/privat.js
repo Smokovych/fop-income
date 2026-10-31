@@ -78,7 +78,7 @@ function randomKey() {
 }
 
 async function privatGet(conn, path, params = {}) {
-  if (!conn.bridge_url) return privatGetServer(conn, path, params);
+  if (!conn.bridge_url) return typeof PRIVAT_DIRECT_API !== "undefined" ? privatGetDirect(conn, path, params) : privatGetServer(conn, path, params);
   const u = new URL(conn.bridge_url);
   u.searchParams.set("key", conn.bridge_key);
   u.searchParams.set("path", path);
@@ -99,6 +99,20 @@ async function privatGet(conn, path, params = {}) {
     throw new Error("Міст повернув некоректну відповідь");
   }
   if (data.status && data.status !== "SUCCESS") throw new Error("ПриватБанк: " + (data.message || data.status));
+  return data;
+}
+
+// Напряму до API (лише на сервері, у фоновому оновленні — там немає обмежень браузера)
+async function privatGetDirect(conn, path, params) {
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) if (v != null && v !== "") q.set(k, v);
+  let r;
+  try { r = await fetch(`${PRIVAT_DIRECT_API}/${path}?${q}`, { headers: { "User-Agent": "fop-income", token: conn.token, "Content-Type": "application/json;charset=utf8" } }); }
+  catch { throw new Error("Немає з'єднання з ПриватБанком"); }
+  const data = await r.json().catch(() => null);
+  if (!data) throw new Error("ПриватБанк: некоректна відповідь (HTTP " + r.status + ")");
+  if (data.status && data.status !== "SUCCESS") throw new Error("ПриватБанк: " + (data.message || data.status));
+  if (!r.ok) throw new Error("ПриватБанк: HTTP " + r.status);
   return data;
 }
 

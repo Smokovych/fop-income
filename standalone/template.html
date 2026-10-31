@@ -113,6 +113,7 @@
 
         <div id="tax-setup" class="tax-setup">
           <p class="muted" id="tax-intro">Дані беруться з Електронного кабінету платника через його офіційний API. Кабінет пускає лише з кваліфікованим електронним підписом (КЕП): відкрийте свій ключ і один раз налаштуйте міст.</p>
+          <div id="tax-server-key" class="card tax-server-key hidden"></div>
           <div class="grid-2">
             <form class="card" id="form-tax-key" autocomplete="off">
               <h3>Крок 1. Ваш ключ (КЕП)</h3>
@@ -125,7 +126,7 @@
                 <input id="tax-tin" inputmode="numeric" maxlength="10" placeholder="1234567890" autocomplete="off"></label>
               <div class="conn-actions"><button class="btn primary" type="submit">Відкрити ключ</button><button class="btn" type="button" id="btn-tax-close-key">Закрити ключ</button></div>
               <p id="tax-key-status" class="small muted"></p>
-              <p class="muted small">🔒 Ключ і пароль залишаються лише в пам'яті цієї вкладки: програма їх не зберігає й нікуди не надсилає. До Кабінету йде тільки підписаний РНОКПП. Після перезавантаження сторінки ключ треба відкрити знову.</p>
+              <p class="muted small" id="tax-key-note">🔒 Ключ і пароль залишаються лише в пам'яті цієї вкладки: програма їх не зберігає й нікуди не надсилає. До Кабінету йде тільки підписаний РНОКПП. Після перезавантаження сторінки ключ треба відкрити знову.</p>
             </form>
             <form class="card" id="form-tax-bridge">
               <h3>Крок 2. Міст до Кабінету</h3>

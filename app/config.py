@@ -40,6 +40,8 @@ PRIVAT_API = os.environ.get("PRIVAT_API", "https://acp.privatbank.ua/api")
 NBU_API = os.environ.get("NBU_API", "https://bank.gov.ua/NBUStatService/v1/statdirectory/exchange")
 # API приватної частини Електронного кабінету платника
 TAX_API = os.environ.get("TAX_API", "https://cabinet.tax.gov.ua/ws/public_api").rstrip("/")
+# Node.js для фонового воркера (app/node/worker.js)
+NODE_BIN = os.environ.get("NODE_BIN", "node")
 # Лише для тестів: куди насправді слати CMP-запити (пошук сертифіката ключа)
 CMP_TEST_URL = os.environ.get("CMP_TEST_URL", "")
 # Пауза між запитами виписки Monobank (ліміт банку — 1 запит на 60 с)

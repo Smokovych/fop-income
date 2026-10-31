@@ -430,6 +430,7 @@ p.small.warn { padding: 8px 12px; }
 
         <div id="tax-setup" class="tax-setup">
           <p class="muted" id="tax-intro">Дані беруться з Електронного кабінету платника через його офіційний API. Кабінет пускає лише з кваліфікованим електронним підписом (КЕП): відкрийте свій ключ і один раз налаштуйте міст.</p>
+          <div id="tax-server-key" class="card tax-server-key hidden"></div>
           <div class="grid-2">
             <form class="card" id="form-tax-key" autocomplete="off">
               <h3>Крок 1. Ваш ключ (КЕП)</h3>
@@ -442,7 +443,7 @@ p.small.warn { padding: 8px 12px; }
                 <input id="tax-tin" inputmode="numeric" maxlength="10" placeholder="1234567890" autocomplete="off"></label>
               <div class="conn-actions"><button class="btn primary" type="submit">Відкрити ключ</button><button class="btn" type="button" id="btn-tax-close-key">Закрити ключ</button></div>
               <p id="tax-key-status" class="small muted"></p>
-              <p class="muted small">🔒 Ключ і пароль залишаються лише в пам'яті цієї вкладки: програма їх не зберігає й нікуди не надсилає. До Кабінету йде тільки підписаний РНОКПП. Після перезавантаження сторінки ключ треба відкрити знову.</p>
+              <p class="muted small" id="tax-key-note">🔒 Ключ і пароль залишаються лише в пам'яті цієї вкладки: програма їх не зберігає й нікуди не надсилає. До Кабінету йде тільки підписаний РНОКПП. Після перезавантаження сторінки ключ треба відкрити знову.</p>
             </form>
             <form class="card" id="form-tax-bridge">
               <h3>Крок 2. Міст до Кабінету</h3>
@@ -725,7 +726,7 @@ function randomKey() {
 }
 
 async function privatGet(conn, path, params = {}) {
-  if (!conn.bridge_url) return privatGetServer(conn, path, params);
+  if (!conn.bridge_url) return typeof PRIVAT_DIRECT_API !== "undefined" ? privatGetDirect(conn, path, params) : privatGetServer(conn, path, params);
   const u = new URL(conn.bridge_url);
   u.searchParams.set("key", conn.bridge_key);
   u.searchParams.set("path", path);
@@ -746,6 +747,20 @@ async function privatGet(conn, path, params = {}) {
     throw new Error("Міст повернув некоректну відповідь");
   }
   if (data.status && data.status !== "SUCCESS") throw new Error("ПриватБанк: " + (data.message || data.status));
+  return data;
+}
+
+// Напряму до API (лише на сервері, у фоновому оновленні — там немає обмежень браузера)
+async function privatGetDirect(conn, path, params) {
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) if (v != null && v !== "") q.set(k, v);
+  let r;
+  try { r = await fetch(`${PRIVAT_DIRECT_API}/${path}?${q}`, { headers: { "User-Agent": "fop-income", token: conn.token, "Content-Type": "application/json;charset=utf8" } }); }
+  catch { throw new Error("Немає з'єднання з ПриватБанком"); }
+  const data = await r.json().catch(() => null);
+  if (!data) throw new Error("ПриватБанк: некоректна відповідь (HTTP " + r.status + ")");
+  if (data.status && data.status !== "SUCCESS") throw new Error("ПриватБанк: " + (data.message || data.status));
+  if (!r.ok) throw new Error("ПриватБанк: HTTP " + r.status);
   return data;
 }
 
@@ -1141,8 +1156,9 @@ async function pushRemote() {
 }
 
 // Підтягує зміни з інших пристроїв
-async function pollRemote() {
+async function pollRemote(force) {
   if (R.pushing || loginWaiter) return;
+  if (force && R.changes) await pushRemote();
   try {
     const meta = await api("GET", "/api/state/meta", undefined, { noLogin: true });
     if (!meta.ok || meta.data.version <= R.version) return;
@@ -1185,424 +1201,12 @@ function adaptUiForServer() {
   }
 }
 
-// ============================================================ Облікові дані з Електронного кабінету платника
-// API приватної частини ЕК (https://cabinet.tax.gov.ua/help/api-registers-int.html):
-//   GET https://cabinet.tax.gov.ua/ws/public_api/payer_card            — усі блоки облікових даних
-//   GET https://cabinet.tax.gov.ua/ws/public_api/payer_card/{група}?page=0&size=… — блок зі списком
-//   Authorization: РНОКПП, підписаний КЕП внутрішнім підписом з сертифікатом, у BASE64.
-// Підпис робиться тут же, у браузері: користувач відкриває свій файловий ключ (.pfx, .jks, Key-6.dat)
-// паролем, бібліотека FopKep (standalone/vendor) підписує РНОКПП за ДСТУ 4145. Ключ і пароль живуть
-// лише в пам'яті вкладки — не зберігаються і нікуди не надсилаються; надсилається тільки готовий підпис.
-// Кабінет не відповідає сторінкам у браузері (немає CORS), тому запити йдуть через «міст» —
-// скрипт Google Apps Script користувача. Міст нічого не зберігає — підпис передається в кожному запиті.
-
-const TAX_ALLOWED_HINT = "payer_card, payer_card/{група}";
-
-const TAX_BRIDGE_VERSION = 2;
-
-function taxBridgeCode(key) {
-  const cmpUrls = typeof FopKep !== "undefined" ? FopKep.CMP_URLS : [];
-  return `// Міст ФОП-дохід → Електронний кабінет платника (лише читання облікових даних)
-// + пошук сертифіката вашого ключа на сервері надавача (CMP), як це робить сайт Кабінету
-const ACCESS_KEY = ${JSON.stringify(key)};
-const VERSION = ${TAX_BRIDGE_VERSION};
-const BASE = 'https://cabinet.tax.gov.ua/ws/public_api/';
-const ALLOWED = /^payer_card(\\/\\d{1,2})?$/;
-const PARAMS = ['page', 'size'];
-const CMP = ${JSON.stringify(cmpUrls)};
-
-function doGet(e) {
-  const p = (e && e.parameter) || {};
-  return out_({ status: 'SUCCESS', bridge: 'ok', kind: 'tax', version: VERSION, keyOk: p.key === ACCESS_KEY });
-}
-
-function doPost(e) {
-  let p;
-  try { p = JSON.parse(e.postData.contents); } catch (err) { return out_({ status: 'ERROR', message: 'Некоректний запит' }); }
-  if (p.key !== ACCESS_KEY) return out_({ status: 'ERROR', message: 'Невірний ключ доступу до мосту. Скопіюйте код мосту з програми ще раз.' });
-  if (p.path === 'cmp') return cmp_(p);
-  if (!ALLOWED.test(p.path || '')) return out_({ status: 'ERROR', message: 'Недозволений запит' });
-  if (!p.auth) return out_({ status: 'ERROR', message: 'Немає підпису' });
-  const q = PARAMS.filter(function (k) { return p.params && p.params[k] != null; })
-    .map(function (k) { return k + '=' + encodeURIComponent(p.params[k]); }).join('&');
-  let r;
-  try {
-    r = UrlFetchApp.fetch(BASE + p.path + (q ? '?' + q : ''), {
-      method: 'get', muteHttpExceptions: true,
-      headers: { 'Authorization': p.auth, 'Accept': 'application/json', 'Content-Type': 'application/json' }
-    });
-  } catch (err) {
-    return out_({ status: 'ERROR', stage: 'cabinet', message: 'Міст працює, але не зміг з’єднатися з Кабінетом: ' + err });
-  }
-  return out_({ status: 'SUCCESS', http: r.getResponseCode(), body: r.getContentText('UTF-8') });
-}
-
-// Запит сертифіката за ідентифікатором відкритого ключа — лише до серверів надавачів зі списку
-function cmp_(p) {
-  if (CMP.indexOf(p.url) < 0) return out_({ status: 'ERROR', message: 'Недозволена адреса' });
-  try {
-    const r = UrlFetchApp.fetch(p.url, { method: 'post', contentType: 'application/octet-stream',
-      payload: Utilities.base64Decode(p.body || ''), muteHttpExceptions: true });
-    return out_({ status: 'SUCCESS', http: r.getResponseCode(), body64: Utilities.base64Encode(r.getContent()) });
-  } catch (err) {
-    return out_({ status: 'SUCCESS', http: 0, body64: '', message: String(err) });
-  }
-}
-
-function out_(obj) {
-  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
-}
-`;
-}
-
-// ---------------------------------------------------------------- ключ (лише в пам'яті)
-let kepKey = null;      // відкритий ключ: { info, sign(text) }
-let kepAuth = null;     // готовий підпис РНОКПП на цю сесію: { tin, b64 }
-let certSearch = null;  // null | "searching" | "notfound" | "needbridge" | "oldbridge"
-// На сервері міст не потрібен: ті самі запити робить сам сервер (/proxy/tax-bridge)
-const TAX_VIA_SERVER = typeof SERVER_MODE !== "undefined" && SERVER_MODE;
-const taxReady = () => TAX_VIA_SERVER || !!(S.tax && S.tax.bridge_url);
-
-async function openKepFiles(files, password) {
-  if (typeof FopKep === "undefined") throw new Error("Бібліотека підпису не завантажилась. Оновіть сторінку.");
-  if (!files.length) throw new Error("Оберіть файл ключа (.pfx, .jks або Key-6.dat)");
-  const bufs = await Promise.all([...files].map(async (f) => new Uint8Array(await f.arrayBuffer())));
-  await new Promise((r) => setTimeout(r, 30)); // дати інтерфейсу показати «Відкриваю…»
-  return FopKep.openKey(bufs, password);
-}
-
-function kepTin() {
-  return (kepKey && kepKey.info.cert && kepKey.info.cert.tin) || $("#tax-tin").value.trim() || S.settings.owner_tax_id || "";
-}
-
-// Сертифікат ключа: спершу збережений раніше (він публічний), далі — пошук у надавача через міст
-async function ensureCert() {
-  if (!kepKey || kepKey.info.hasCert) return true;
-  if (S.tax.cert_b64 && kepKey.addCerts([S.tax.cert_b64])) return true;
-  if (!taxReady()) { certSearch = "needbridge"; renderKeyStatus(); return false; }
-  if (!TAX_VIA_SERVER && (S.tax.bridge_version || 1) < TAX_BRIDGE_VERSION) { certSearch = "oldbridge"; renderKeyStatus(); return false; }
-  certSearch = "searching"; renderKeyStatus();
-  try {
-    const r = await kepKey.findCert(async (url, bodyB64) => {
-      const w = await bridgePost({ path: "cmp", url, body: bodyB64 });
-      return { status: w.http, bodyB64: w.body64 };
-    });
-    if (r.ok) {
-      S.tax.cert_b64 = kepKey.info.certB64; save(true);
-      certSearch = null;
-      log("info", `Сертифікат ключа знайдено на ${r.url.replace(/^https?:\/\//, "").split("/")[0]}`);
-    } else certSearch = "notfound";
-  } catch (e) { certSearch = "notfound"; toast(e.message, true); }
-  const c = kepKey.info.cert;
-  if (c && c.tin) $("#tax-tin").value = c.tin;
-  renderKeyStatus();
-  return kepKey.info.hasCert;
-}
-
-async function getAuth() {
-  if (!kepKey) {
-    const err = new Error("Відкрийте ключ (крок 1) — ключ не зберігається, тому після перезавантаження сторінки його треба відкрити знову.");
-    err.code = "NOKEY";
-    throw err;
-  }
-  if (!(await ensureCert())) throw new Error("Немає сертифіката ключа — див. крок 1.");
-  const tin = kepTin();
-  if (!/^\d{8,10}$/.test(tin)) throw new Error("Вкажіть РНОКПП — 10 цифр (у сертифікаті ключа його не знайдено)");
-  if (!kepAuth || kepAuth.tin !== tin) kepAuth = { tin, b64: await kepKey.sign(tin) };
-  return kepAuth.b64;
-}
-
-// ---------------------------------------------------------------- запити через міст
-async function bridgePost(payload) {
-  const t = S.tax || {};
-  if (!taxReady()) throw new Error("Спершу підключіть міст до Кабінету (крок 2)");
-  let r;
-  try {
-    r = TAX_VIA_SERVER
-      ? await fetch("/proxy/tax-bridge", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) })
-      : await fetch(t.bridge_url, {
-        method: "POST", redirect: "follow",
-        headers: { "Content-Type": "text/plain;charset=utf-8" }, // без попереднього запиту CORS
-        body: JSON.stringify(Object.assign({ key: t.bridge_key }, payload)),
-      });
-  } catch {
-    if (TAX_VIA_SERVER) throw new Error("Немає зв'язку з сервером програми");
-    const err = new Error("Програма не може прочитати відповідь мосту до Кабінету. Перевірте розгортання в Google: доступ «Усі», адреса /exec, нова версія коду.");
-    err.bridgeUnreachable = true;
-    throw err;
-  }
-  const text = await r.text();
-  let w;
-  try { w = JSON.parse(text); }
-  catch { throw new Error(/<html/i.test(text) ? "Міст відповів сторінкою Google замість даних. У розгортанні оберіть доступ «Усі»." : "Міст повернув некоректну відповідь"); }
-  if (w.status !== "SUCCESS") throw new Error(w.message || w.error || "Помилка мосту");
-  if (w.bridge) throw new Error("Це адреса старого мосту або мосту ПриватБанку. Для Кабінету потрібен окремий міст з кодом із цієї вкладки.");
-  return w;
-}
-
-async function taxCall(path, params, auth) {
-  const w = await bridgePost({ path, params: params || {}, auth });
-  let body = null;
-  try { body = w.body ? JSON.parse(w.body) : null; } catch {}
-  if (w.http === 401 || w.http === 403) {
-    const msg = (body && (body.message || body.error_description || body.error)) || (w.body || "").slice(0, 200);
-    kepAuth = null; // наступна спроба — з новим підписом
-    throw new Error(`Кабінет не прийняв підпис (HTTP ${w.http})${msg ? ": " + msg : ""}. Перевірте, що ключ чинний і належить цьому РНОКПП; спробуйте ще раз.`);
-  }
-  if (w.http >= 400 || !body) throw new Error(`Кабінет відповів помилкою HTTP ${w.http}: ${(w.body || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").slice(0, 200)}`);
-  return body;
-}
-
-async function taxBridgePing(url, key) {
-  let r;
-  try { r = await fetch(`${url}?path=ping&key=${encodeURIComponent(key)}`, { redirect: "follow" }); }
-  catch { throw new Error("Програма не може прочитати відповідь мосту. Перевірте розгортання в Google: «Хто має доступ» — «Усі», адреса закінчується на /exec."); }
-  const data = await r.json().catch(() => null);
-  if (!data) throw new Error("Міст відповів не тим, що очікувалось. Перевірте, що вставили код мосту саме з цієї вкладки.");
-  if (data.kind !== "tax") throw new Error("Це міст для ПриватБанку або старий код. Для Кабінету створіть окремий міст з кодом із цієї вкладки.");
-  if (data.keyOk === false) throw new Error("Міст відповідає, але ключ у ньому інший. Скопіюйте код мосту з програми ще раз і оновіть розгортання («Нова версія»).");
-  return data.version || 1;
-}
-
-// Завантажує всі облікові дані; блоки-списки без даних догружає окремо
-async function fetchPayerCard(auth) {
-  const groups = await taxCall("payer_card", null, auth);
-  if (!Array.isArray(groups)) throw new Error("Кабінет повернув дані в незнайомому форматі");
-  for (const g of groups) {
-    if (g.type === 1 || (Array.isArray(g.listValues) && g.listValues.length)) continue;
-    if (g.values && Object.keys(g.values).length) continue;
-    try {
-      const rows = [];
-      for (let page = 0; page < 20; page++) {
-        const d = await taxCall(`payer_card/${g.idGroup}`, { page, size: 100 }, auth);
-        const vals = Array.isArray(d.values) ? d.values : Array.isArray(d.content) ? d.content : [];
-        rows.push(...vals);
-        if (vals.length < 100) break;
-      }
-      g.listValues = rows;
-    } catch (e) { g.loadError = e.message; }
-  }
-  return groups;
-}
-
-// ---------------------------------------------------------------- зведення
-const TAX_FIELDS = {
-  name: [/FULL_NAME/, /^NAME$/, /ПІБ|найменуван/i],
-  tin: [/^TIN$/, /податковий номер|РНОКПП|код/i],
-  address: [/ADR|ADDRESS|MISCE/i, /адрес|місцезнаход|місце прожив/i],
-  sti: [/STI|DPI|NAME_STI/i, /орган ДПС|податков.*орган|ДПІ|контролюючого орган/i],
-};
-
-// Шукає значення в блоці за назвою поля (ключ або підпис у headers)
-function groupValue(g, patterns) {
-  if (!g || !g.values || Array.isArray(g.values)) return null;
-  for (const re of patterns) {
-    for (const [k, v] of Object.entries(g.values)) {
-      if (v == null || v === "") continue;
-      if (re.test(k) || re.test((g.headers || {})[k] || "")) return v;
-    }
-  }
-  return null;
-}
-
-function taxGroups() { return (S.tax && S.tax.card) || []; }
-const taxGroup = (id) => taxGroups().find((g) => g.idGroup === id);
-
-function groupRows(g) {
-  if (!g) return [];
-  if (Array.isArray(g.listValues)) return g.listValues;
-  if (Array.isArray(g.values)) return g.values;
-  return [];
-}
-
-function taxSummary() {
-  const g1 = taxGroup(1), g2 = taxGroup(2), g6 = taxGroup(6), g7 = taxGroup(7), g5 = taxGroup(5), g16 = taxGroup(16);
-  const any = (pats) => groupValue(g1, pats) ?? groupValue(g2, pats);
-  const ep = [];
-  const epSrc = g6 && (g6.values && !Array.isArray(g6.values) ? [g6.values] : groupRows(g6));
-  for (const row of epSrc || []) {
-    const parts = Object.entries(row).filter(([, v]) => v != null && v !== "").map(([k, v]) => `${(g6.headers || {})[k] || k}: ${v}`);
-    if (parts.length) ep.push(parts.join(" · "));
-  }
-  const kved = groupRows(g16).map((r) => {
-    const vals = Object.entries(r).filter(([, v]) => v != null && v !== "");
-    const code = (vals.find(([k, v]) => /KVED|KOD|CODE/i.test(k) || /^\d{2}\.\d{2}$/.test(String(v))) || [])[1];
-    const name = (vals.find(([k]) => /NAME|NAZ/i.test(k)) || [])[1];
-    const main = vals.some(([k, v]) => /MAIN|OSN|IS_?BASIC|PRIZN/i.test(k) && (v === 1 || v === true || /^(1|так|основн)/i.test(String(v))));
-    return { code, name, main, raw: vals };
-  });
-  return {
-    name: any(TAX_FIELDS.name), tin: any(TAX_FIELDS.tin), address: any(TAX_FIELDS.address), sti: any(TAX_FIELDS.sti),
-    ep, kved, vat: g5 && (groupValue(g5, [/.*/]) != null || groupRows(g5).length) ? true : null, esv: g7,
-  };
-}
-
-// ---------------------------------------------------------------- вкладка
-function fmtTaxValue(v) {
-  if (v == null || v === "") return "";
-  if (typeof v === "boolean") return v ? "так" : "ні";
-  return String(v);
-}
-
-function renderGroup(g) {
-  const headers = g.headers || {};
-  let body = "";
-  if (g.values && !Array.isArray(g.values) && Object.keys(g.values).length) {
-    const rows = Object.entries(g.values).filter(([, v]) => v != null && v !== "");
-    body += rows.length ? `<dl class="kv">${rows.map(([k, v]) => `<dt>${esc(headers[k] || k)}</dt><dd>${esc(fmtTaxValue(v))}</dd>`).join("")}</dl>` : "";
-  }
-  const list = groupRows(g);
-  if (list.length) {
-    const cols = [...new Set([...Object.keys(headers).filter((k) => list.some((r) => r[k] != null && r[k] !== "")), ...list.flatMap((r) => Object.keys(r))])]
-      .filter((k) => list.some((r) => r[k] != null && r[k] !== ""));
-    body += `<div class="table-wrap"><table class="table kv-table"><thead><tr>${cols.map((k) => `<th>${esc(headers[k] || k)}</th>`).join("")}</tr></thead>
-      <tbody>${list.map((r) => `<tr>${cols.map((k) => `<td data-label="${esc(headers[k] || k)}">${esc(fmtTaxValue(r[k]))}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
-  }
-  if (g.loadError) body += `<p class="error small">Не вдалося завантажити: ${esc(g.loadError)}</p>`;
-  return `<details class="card tax-group" ${body ? "" : "data-empty"}>
-    <summary><span>${esc(g.title || "Блок " + g.idGroup)}</span><span class="muted small">${body ? (list.length ? `записів: ${list.length}` : "") : "немає даних"}</span></summary>
-    ${body || `<p class="muted small">У Кабінеті немає даних цього блоку.</p>`}</details>`;
-}
-
-function loadAccount() {
-  const t = S.tax || {};
-  const hasCard = taxGroups().length > 0;
-  // крок 1-2: підпис і міст
-  // кроки підключення згортаються, коли все працює; при помилці (напр. підпис застарів) — розгортаються
-  $("#tax-setup").classList.toggle("collapsed", !!(hasCard && kepKey && taxReady() && !t.last_error));
-  $("#form-tax-bridge").classList.toggle("hidden", TAX_VIA_SERVER);
-  $("#form-tax-bridge").parentElement.classList.toggle("single", TAX_VIA_SERVER);
-  if (TAX_VIA_SERVER) $("#tax-intro").textContent = "Дані беруться з Електронного кабінету платника через його офіційний API. Кабінет пускає лише з кваліфікованим електронним підписом (КЕП): відкрийте свій ключ — решту зробить сервер програми.";
-  $("#tax-tin").value = $("#tax-tin").value || S.settings.owner_tax_id || "";
-  renderKeyStatus();
-  $("#tax-bridge-status").innerHTML = t.bridge_url ? `✓ Міст підключено` : "Міст ще не підключено";
-  if (!t.pending_key) { t.pending_key = randomKey(); S.tax = t; save(); }
-  $("#tax-bridge-code").value = taxBridgeCode(t.bridge_key || t.pending_key);
-  $("#tax-bridge-url").value = t.bridge_url || "";
-  $("#btn-tax-load").disabled = false;
-  $("#tax-meta").textContent = t.fetched_at ? `Оновлено з Кабінету ${new Date(t.fetched_at * 1000).toLocaleString("uk-UA")}` : "";
-  $("#tax-error").hidden = !t.last_error;
-  $("#tax-error").textContent = t.last_error || "";
-
-  if (!hasCard) { $("#tax-summary").innerHTML = ""; $("#tax-groups").innerHTML = ""; return; }
-  const s = taxSummary();
-  const kv = [["Назва ФОП", s.name], ["Код (РНОКПП)", s.tin], ["Адреса", s.address], ["Податкова", s.sti]].filter(([, v]) => v);
-  const mainK = s.kved.filter((k) => k.main), otherK = s.kved.filter((k) => !k.main);
-  $("#tax-summary").innerHTML = `
-    <div class="card tax-main">
-      <dl class="kv kv-main">${kv.map(([k, v]) => `<dt>${k}</dt><dd>${esc(fmtTaxValue(v))}</dd>`).join("")}</dl>
-      ${s.ep.length ? `<h4>Платник єдиного податку</h4><ul class="plain">${s.ep.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : `<p class="muted small">Даних про реєстрацію платником єдиного податку немає.</p>`}
-      ${s.kved.length ? `<h4>КВЕД</h4><ul class="plain kved">${[...mainK, ...otherK].map((k) => `<li>${k.main ? "<b>" : ""}${esc(k.code || "")} ${esc(k.name || k.raw.map(([, v]) => v).join(" · "))}${k.main ? "</b> <span class=\"muted small\">основний</span>" : ""}</li>`).join("")}</ul>` : ""}
-    </div>`;
-  $("#tax-groups").innerHTML = taxGroups().map(renderGroup).join("");
-}
-
-function renderKeyStatus() {
-  const box = $("#tax-key-status");
-  if (!kepKey) { box.className = "small muted"; box.textContent = "Ключ не відкрито. Він не зберігається: після перезавантаження сторінки відкрийте його знову."; return; }
-  const c = kepKey.info.cert;
-  if (!c) {
-    const msg = {
-      searching: ["small muted", "✓ Ключ відкрито. Шукаю сертифікат ключа на сервері надавача…"],
-      needbridge: ["small muted", "✓ Ключ відкрито. Сертифіката у файлі немає — це звично: програма знайде його на сервері надавача (як сайт Кабінету), щойно ви підключите міст (крок 2)."],
-      oldbridge: ["small warn", "✓ Ключ відкрито. Щоб програма знайшла сертифікат, оновіть код мосту: скопіюйте новий код (крок 2), вставте в редактор скрипта і «Керувати розгортаннями» → ✎ → «Версія»: «Нова версія» → «Розгорнути». Потім натисніть «Підключити міст»."],
-      notfound: ["small warn", "Ключ відкрито, але сертифікат не знайдено на серверах надавачів. Додайте файл сертифіката (.cer) разом із ключем — його можна завантажити на сайті вашого надавача."],
-    }[certSearch] || ["small muted", "✓ Ключ відкрито."];
-    box.className = msg[0]; box.textContent = msg[1]; return;
-  }
-  const expired = c.validTo && Date.parse(c.validTo) < Date.now();
-  box.className = "small " + (expired ? "warn" : "ok");
-  box.innerHTML = `${expired ? "⚠ Сертифікат протермінований" : "✓ Ключ відкрито"}: <b>${esc(c.name || c.org || "—")}</b>`
-    + (c.tin ? `, РНОКПП ${esc(c.tin)}` : "") + (c.issuer ? `<br><span class="muted">${esc(c.issuer)}</span>` : "")
-    + (c.validTo ? `<span class="muted"> · діє до ${new Date(c.validTo).toLocaleDateString("uk-UA")}</span>` : "");
-}
-
-async function refreshPayerCard() {
-  const btn = $("#btn-tax-load");
-  if (!taxReady() || !kepKey) {
-    $("#tax-setup").classList.remove("collapsed");
-    const target = !kepKey ? "#tax-key-files" : "#tax-bridge-url";
-    $(target).scrollIntoView({ behavior: "smooth", block: "center" });
-    return toast(!kepKey ? "Спершу відкрийте ключ (крок 1)" : "Спершу підключіть міст (крок 2)", true);
-  }
-  btn.disabled = true; btn.textContent = "Підписую й завантажую…";
-  try {
-    const card = await fetchPayerCard(await getAuth());
-    S.tax.card = card;
-    S.tax.fetched_at = nowTs();
-    S.tax.last_error = null;
-    // ПІБ і РНОКПП потрібні, щоб не рахувати доходом власні перекази
-    const s = taxSummary();
-    const filled = [];
-    if (!S.settings.owner_tax_id && s.tin && /^\d{10}$/.test(String(s.tin))) { S.settings.owner_tax_id = String(s.tin); filled.push("РНОКПП"); }
-    if (!S.settings.owner_name && s.name) { S.settings.owner_name = String(s.name).replace(/^ФОП\s+/i, ""); filled.push("ПІБ"); }
-    if (filled.length) reclassifyAll();
-    log("info", `Облікові дані з Кабінету оновлено, блоків: ${card.length}`);
-    save(true);
-    toast("Облікові дані завантажено" + (filled.length ? `. У Налаштуваннях заповнено: ${filled.join(", ")}` : ""));
-  } catch (e) {
-    S.tax.last_error = e.message; save();
-    toast(e.message, true);
-  }
-  btn.textContent = "Оновити з Кабінету";
-  loadAccount();
-}
-
-function initTaxTab() {
-  if (!S.tax) S.tax = {};
-  // старий спосіб (завантажений .p7s) більше не використовується — не тримаємо підпис у сховищі
-  if (S.tax.auth) { for (const k of ["auth", "auth_name", "auth_tin", "auth_added_at"]) delete S.tax[k]; save(); }
-  $("#form-tax-key").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const btn = $("button[type=submit]", e.target), pw = $("#tax-key-password");
-    btn.disabled = true; btn.textContent = "Відкриваю ключ…";
-    try {
-      kepKey = await openKepFiles($("#tax-key-files").files, pw.value);
-      kepAuth = null; certSearch = null;
-      pw.value = "";
-      toast("Ключ відкрито");
-      await ensureCert();
-      const c = kepKey.info.cert;
-      if (c && c.tin) $("#tax-tin").value = c.tin;
-      renderKeyStatus();
-      if (c && taxReady()) refreshPayerCard();
-    } catch (err) { kepKey = null; renderKeyStatus(); toast(err.message, true); }
-    btn.disabled = false; btn.textContent = "Відкрити ключ";
-  });
-  $("#btn-tax-close-key").addEventListener("click", () => { kepKey = null; kepAuth = null; certSearch = null; $("#tax-key-files").value = ""; renderKeyStatus(); toast("Ключ закрито"); });
-  $("#btn-tax-copy").addEventListener("click", async () => {
-    const box = $("#tax-bridge-code");
-    try { await navigator.clipboard.writeText(box.value); toast("Код скопійовано"); }
-    catch { box.focus(); box.select(); toast("Натисніть Cmd+C, щоб скопіювати виділений код"); }
-  });
-  $("#form-tax-bridge").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const { url, error } = cleanBridgeUrl($("#tax-bridge-url").value);
-    if (error) return toast(error, true);
-    const key = S.tax.bridge_key || S.tax.pending_key;
-    const btn = $("button[type=submit]", e.target);
-    btn.disabled = true; btn.textContent = "Перевіряю міст…";
-    try {
-      const version = await taxBridgePing(url, key);
-      Object.assign(S.tax, { bridge_url: url, bridge_key: key, bridge_version: version, last_error: null });
-      save(true);
-      toast(version < TAX_BRIDGE_VERSION ? "Міст підключено, але код застарів — оновіть його (див. крок 1)" : "Міст до Кабінету підключено");
-      loadAccount();
-      if (kepKey && (await ensureCert())) refreshPayerCard();
-    } catch (err) { S.tax.last_error = err.message; save(); loadAccount(); toast(err.message, true); }
-    btn.disabled = false; btn.textContent = "Підключити міст";
-  });
-  $("#btn-tax-load").addEventListener("click", refreshPayerCard);
-  $("#btn-tax-setup").addEventListener("click", () => $("#tax-setup").classList.toggle("collapsed"));
-  $("#btn-tax-forget").addEventListener("click", () => {
-    if (!confirm("Видалити з програми облікові дані й налаштування мосту? Міст у Google залишиться — його можна видалити на script.google.com.")) return;
-    kepKey = null; kepAuth = null;
-    S.tax = { pending_key: randomKey() }; save(true); loadAccount(); toast("Облікові дані видалено");
-  });
-}
-
 "use strict";
-/* ФОП-дохід — версія, що працює повністю в браузері.
+/* ФОП-дохід — ядро: утиліти, параметри, сховище, класифікація, курси НБУ, синхронізація Monobank.
+   Без звернень до сторінки на верхньому рівні — той самий код виконується і в браузері, і на сервері
+   (app/node/worker.js — фонове оновлення виписок). Інтерфейс — у app.js.
+
+   ФОП-дохід — версія, що працює повністю в браузері.
    Monobank і курси НБУ — напряму через їхні API; ПриватБанк — через міст або сервер; інші — імпорт файлу виписки.
    Локально дані зберігаються в localStorage цього браузера, на сервері — на сервері (див. remote.js). */
 
@@ -1639,6 +1243,40 @@ function kyivMidnight(iso) {
     if (kyivDate(t) === iso && kyivDate(t - 1) !== iso) return t;
   }
   return guess;
+}
+
+// Числа й дати з банківських даних (потрібні і виписці ПриватБанку, і імпорту файлів)
+function parseNum(v) {
+  if (typeof v === "number") return v;
+  const s = String(v ?? "").replace(/[\s ]/g, "").replace(/[^\d,.\-−]/g, "").replace("−", "-");
+  if (!s) return 0;
+  const lastComma = s.lastIndexOf(","), lastDot = s.lastIndexOf(".");
+  const t = lastComma > lastDot ? s.replace(/\./g, "").replace(",", ".") : s.replace(/,/g, "");
+  return Number(t) || 0;
+}
+
+function parseDateTime(dv, tv) {
+  let y, m, d, hh = 12, mi = 0, ss = 0;
+  if (typeof dv === "number") { // серійна дата Excel
+    const ms = Math.round((dv - 25569) * 86400000);
+    const dt = new Date(ms);
+    y = dt.getUTCFullYear(); m = dt.getUTCMonth() + 1; d = dt.getUTCDate();
+    const frac = dv % 1;
+    if (frac) { const sec = Math.round(frac * 86400); hh = Math.floor(sec / 3600); mi = Math.floor(sec / 60) % 60; ss = sec % 60; }
+  } else {
+    const s = String(dv).trim();
+    let mt = s.match(/(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})(?:[ T,]+(\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
+    if (mt) { d = +mt[1]; m = +mt[2]; y = +mt[3] < 100 ? 2000 + +mt[3] : +mt[3]; if (mt[4]) { hh = +mt[4]; mi = +mt[5]; ss = +(mt[6] || 0); } }
+    else if ((mt = s.match(/(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?/))) {
+      y = +mt[1]; m = +mt[2]; d = +mt[3]; if (mt[4]) { hh = +mt[4]; mi = +mt[5]; ss = +(mt[6] || 0); }
+    } else return null;
+  }
+  if (tv !== undefined && tv !== "") {
+    if (typeof tv === "number") { const sec = Math.round((tv % 1) * 86400); hh = Math.floor(sec / 3600); mi = Math.floor(sec / 60) % 60; ss = sec % 60; }
+    else { const mt = String(tv).match(/(\d{1,2}):(\d{2})(?::(\d{2}))?/); if (mt) { hh = +mt[1]; mi = +mt[2]; ss = +(mt[3] || 0); } }
+  }
+  const iso = `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+  return kyivMidnight(iso) + hh * 3600 + mi * 60 + ss;
 }
 
 // ============================================================ параметри
@@ -2083,7 +1721,7 @@ function renderBanner() {
     el.innerHTML = `<div>Виписки завантажено не повністю. <button class="btn" id="banner-resume">Продовжити завантаження</button></div>`;
   } else el.className = "banner hidden";
 }
-document.addEventListener("click", (e) => { if (e.target.id === "banner-resume") syncAll(); });
+if (typeof document !== "undefined" && document.addEventListener) document.addEventListener("click", (e) => { if (e.target.id === "banner-resume") syncAll(); });
 
 async function syncAll(onlyConnId, userInitiated = false) {
   if (syncing) { syncQueued = true; return; }
@@ -2091,7 +1729,7 @@ async function syncAll(onlyConnId, userInitiated = false) {
   if (!(await acquireSyncLock())) {
     syncing = false;
     setStatus("");
-    if (userInitiated) toast("Виписки зараз оновлює інший ваш пристрій. Нові операції з'являться тут автоматично.");
+    if (userInitiated) toast("Виписки зараз оновлює сервер або інший ваш пристрій. Нові операції з'являться тут автоматично.");
     return;
   }
   renderBanner();
@@ -2135,6 +1773,519 @@ async function syncAll(onlyConnId, userInitiated = false) {
     if (syncQueued) { syncQueued = false; syncAll(); }
   }
 }
+
+
+// ============================================================ Облікові дані з Електронного кабінету платника
+// API приватної частини ЕК (https://cabinet.tax.gov.ua/help/api-registers-int.html):
+//   GET https://cabinet.tax.gov.ua/ws/public_api/payer_card            — усі блоки облікових даних
+//   GET https://cabinet.tax.gov.ua/ws/public_api/payer_card/{група}?page=0&size=… — блок зі списком
+//   Authorization: РНОКПП, підписаний КЕП внутрішнім підписом з сертифікатом, у BASE64.
+// Підпис робиться тут же, у браузері: користувач відкриває свій файловий ключ (.pfx, .jks, Key-6.dat)
+// паролем, бібліотека FopKep (standalone/vendor) підписує РНОКПП за ДСТУ 4145. Ключ і пароль живуть
+// лише в пам'яті вкладки — не зберігаються і нікуди не надсилаються; надсилається тільки готовий підпис.
+// Кабінет не відповідає сторінкам у браузері (немає CORS), тому запити йдуть через «міст» —
+// скрипт Google Apps Script користувача. Міст нічого не зберігає — підпис передається в кожному запиті.
+
+const TAX_ALLOWED_HINT = "payer_card, payer_card/{група}";
+
+const TAX_BRIDGE_VERSION = 2;
+
+function taxBridgeCode(key) {
+  const cmpUrls = typeof FopKep !== "undefined" ? FopKep.CMP_URLS : [];
+  return `// Міст ФОП-дохід → Електронний кабінет платника (лише читання облікових даних)
+// + пошук сертифіката вашого ключа на сервері надавача (CMP), як це робить сайт Кабінету
+const ACCESS_KEY = ${JSON.stringify(key)};
+const VERSION = ${TAX_BRIDGE_VERSION};
+const BASE = 'https://cabinet.tax.gov.ua/ws/public_api/';
+const ALLOWED = /^payer_card(\\/\\d{1,2})?$/;
+const PARAMS = ['page', 'size'];
+const CMP = ${JSON.stringify(cmpUrls)};
+
+function doGet(e) {
+  const p = (e && e.parameter) || {};
+  return out_({ status: 'SUCCESS', bridge: 'ok', kind: 'tax', version: VERSION, keyOk: p.key === ACCESS_KEY });
+}
+
+function doPost(e) {
+  let p;
+  try { p = JSON.parse(e.postData.contents); } catch (err) { return out_({ status: 'ERROR', message: 'Некоректний запит' }); }
+  if (p.key !== ACCESS_KEY) return out_({ status: 'ERROR', message: 'Невірний ключ доступу до мосту. Скопіюйте код мосту з програми ще раз.' });
+  if (p.path === 'cmp') return cmp_(p);
+  if (!ALLOWED.test(p.path || '')) return out_({ status: 'ERROR', message: 'Недозволений запит' });
+  if (!p.auth) return out_({ status: 'ERROR', message: 'Немає підпису' });
+  const q = PARAMS.filter(function (k) { return p.params && p.params[k] != null; })
+    .map(function (k) { return k + '=' + encodeURIComponent(p.params[k]); }).join('&');
+  let r;
+  try {
+    r = UrlFetchApp.fetch(BASE + p.path + (q ? '?' + q : ''), {
+      method: 'get', muteHttpExceptions: true,
+      headers: { 'Authorization': p.auth, 'Accept': 'application/json', 'Content-Type': 'application/json' }
+    });
+  } catch (err) {
+    return out_({ status: 'ERROR', stage: 'cabinet', message: 'Міст працює, але не зміг з’єднатися з Кабінетом: ' + err });
+  }
+  return out_({ status: 'SUCCESS', http: r.getResponseCode(), body: r.getContentText('UTF-8') });
+}
+
+// Запит сертифіката за ідентифікатором відкритого ключа — лише до серверів надавачів зі списку
+function cmp_(p) {
+  if (CMP.indexOf(p.url) < 0) return out_({ status: 'ERROR', message: 'Недозволена адреса' });
+  try {
+    const r = UrlFetchApp.fetch(p.url, { method: 'post', contentType: 'application/octet-stream',
+      payload: Utilities.base64Decode(p.body || ''), muteHttpExceptions: true });
+    return out_({ status: 'SUCCESS', http: r.getResponseCode(), body64: Utilities.base64Encode(r.getContent()) });
+  } catch (err) {
+    return out_({ status: 'SUCCESS', http: 0, body64: '', message: String(err) });
+  }
+}
+
+function out_(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
+}
+`;
+}
+
+// ---------------------------------------------------------------- ключ (лише в пам'яті)
+let kepKey = null;      // відкритий ключ: { info, sign(text) }
+let kepAuth = null;     // готовий підпис РНОКПП на цю сесію: { tin, b64 }
+let certSearch = null;  // null | "searching" | "notfound" | "needbridge" | "oldbridge"
+// На сервері міст не потрібен: ті самі запити робить сам сервер (/proxy/tax-bridge)
+const TAX_VIA_SERVER = typeof SERVER_MODE !== "undefined" && SERVER_MODE;
+const taxReady = () => TAX_VIA_SERVER || !!(S.tax && S.tax.bridge_url);
+
+async function openKepFiles(files, password) {
+  if (typeof FopKep === "undefined") throw new Error("Бібліотека підпису не завантажилась. Оновіть сторінку.");
+  if (!files.length) throw new Error("Оберіть файл ключа (.pfx, .jks або Key-6.dat)");
+  const bufs = await Promise.all([...files].map(async (f) => new Uint8Array(await f.arrayBuffer())));
+  await new Promise((r) => setTimeout(r, 30)); // дати інтерфейсу показати «Відкриваю…»
+  return FopKep.openKey(bufs, password);
+}
+
+function kepTin() {
+  return (kepKey && kepKey.info.cert && kepKey.info.cert.tin) || $("#tax-tin").value.trim() || S.settings.owner_tax_id || "";
+}
+
+// Сертифікат ключа: спершу збережений раніше (він публічний), далі — пошук у надавача через міст
+async function ensureCert() {
+  if (!kepKey || kepKey.info.hasCert) return true;
+  if (S.tax.cert_b64 && kepKey.addCerts([S.tax.cert_b64])) return true;
+  if (!taxReady()) { certSearch = "needbridge"; renderKeyStatus(); return false; }
+  if (!TAX_VIA_SERVER && (S.tax.bridge_version || 1) < TAX_BRIDGE_VERSION) { certSearch = "oldbridge"; renderKeyStatus(); return false; }
+  certSearch = "searching"; renderKeyStatus();
+  try {
+    const r = await kepKey.findCert(async (url, bodyB64) => {
+      const w = await bridgePost({ path: "cmp", url, body: bodyB64 });
+      return { status: w.http, bodyB64: w.body64 };
+    });
+    if (r.ok) {
+      S.tax.cert_b64 = kepKey.info.certB64; save(true);
+      certSearch = null;
+      log("info", `Сертифікат ключа знайдено на ${r.url.replace(/^https?:\/\//, "").split("/")[0]}`);
+    } else certSearch = "notfound";
+  } catch (e) { certSearch = "notfound"; toast(e.message, true); }
+  const c = kepKey.info.cert;
+  if (c && c.tin) $("#tax-tin").value = c.tin;
+  renderKeyStatus();
+  return kepKey.info.hasCert;
+}
+
+async function getAuth() {
+  if (!kepKey) {
+    const err = new Error("Відкрийте ключ (крок 1) — ключ не зберігається, тому після перезавантаження сторінки його треба відкрити знову.");
+    err.code = "NOKEY";
+    throw err;
+  }
+  if (!(await ensureCert())) throw new Error("Немає сертифіката ключа — див. крок 1.");
+  const tin = kepTin();
+  if (!/^\d{8,10}$/.test(tin)) throw new Error("Вкажіть РНОКПП — 10 цифр (у сертифікаті ключа його не знайдено)");
+  if (!kepAuth || kepAuth.tin !== tin) kepAuth = { tin, b64: await kepKey.sign(tin) };
+  return kepAuth.b64;
+}
+
+// ---------------------------------------------------------------- запити через міст
+async function bridgePost(payload) {
+  const t = S.tax || {};
+  if (!taxReady()) throw new Error("Спершу підключіть міст до Кабінету (крок 2)");
+  let r;
+  try {
+    r = TAX_VIA_SERVER
+      ? await fetch("/proxy/tax-bridge", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) })
+      : await fetch(t.bridge_url, {
+        method: "POST", redirect: "follow",
+        headers: { "Content-Type": "text/plain;charset=utf-8" }, // без попереднього запиту CORS
+        body: JSON.stringify(Object.assign({ key: t.bridge_key }, payload)),
+      });
+  } catch {
+    if (TAX_VIA_SERVER) throw new Error("Немає зв'язку з сервером програми");
+    const err = new Error("Програма не може прочитати відповідь мосту до Кабінету. Перевірте розгортання в Google: доступ «Усі», адреса /exec, нова версія коду.");
+    err.bridgeUnreachable = true;
+    throw err;
+  }
+  const text = await r.text();
+  let w;
+  try { w = JSON.parse(text); }
+  catch { throw new Error(/<html/i.test(text) ? "Міст відповів сторінкою Google замість даних. У розгортанні оберіть доступ «Усі»." : "Міст повернув некоректну відповідь"); }
+  if (w.status !== "SUCCESS") throw new Error(w.message || w.error || "Помилка мосту");
+  if (w.bridge) throw new Error("Це адреса старого мосту або мосту ПриватБанку. Для Кабінету потрібен окремий міст з кодом із цієї вкладки.");
+  return w;
+}
+
+async function taxCall(path, params, auth) {
+  const w = await bridgePost({ path, params: params || {}, auth });
+  let body = null;
+  try { body = w.body ? JSON.parse(w.body) : null; } catch {}
+  if (w.http === 401 || w.http === 403) {
+    const msg = (body && (body.message || body.error_description || body.error)) || (w.body || "").slice(0, 200);
+    kepAuth = null; // наступна спроба — з новим підписом
+    throw new Error(`Кабінет не прийняв підпис (HTTP ${w.http})${msg ? ": " + msg : ""}. Перевірте, що ключ чинний і належить цьому РНОКПП; спробуйте ще раз.`);
+  }
+  if (w.http >= 400 || !body) throw new Error(`Кабінет відповів помилкою HTTP ${w.http}: ${(w.body || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").slice(0, 200)}`);
+  return body;
+}
+
+async function taxBridgePing(url, key) {
+  let r;
+  try { r = await fetch(`${url}?path=ping&key=${encodeURIComponent(key)}`, { redirect: "follow" }); }
+  catch { throw new Error("Програма не може прочитати відповідь мосту. Перевірте розгортання в Google: «Хто має доступ» — «Усі», адреса закінчується на /exec."); }
+  const data = await r.json().catch(() => null);
+  if (!data) throw new Error("Міст відповів не тим, що очікувалось. Перевірте, що вставили код мосту саме з цієї вкладки.");
+  if (data.kind !== "tax") throw new Error("Це міст для ПриватБанку або старий код. Для Кабінету створіть окремий міст з кодом із цієї вкладки.");
+  if (data.keyOk === false) throw new Error("Міст відповідає, але ключ у ньому інший. Скопіюйте код мосту з програми ще раз і оновіть розгортання («Нова версія»).");
+  return data.version || 1;
+}
+
+// Завантажує всі облікові дані; блоки-списки без даних догружає окремо
+async function fetchPayerCard(auth) {
+  const groups = await taxCall("payer_card", null, auth);
+  if (!Array.isArray(groups)) throw new Error("Кабінет повернув дані в незнайомому форматі");
+  for (const g of groups) {
+    if (g.type === 1 || (Array.isArray(g.listValues) && g.listValues.length)) continue;
+    if (g.values && Object.keys(g.values).length) continue;
+    try {
+      const rows = [];
+      for (let page = 0; page < 20; page++) {
+        const d = await taxCall(`payer_card/${g.idGroup}`, { page, size: 100 }, auth);
+        const vals = Array.isArray(d.values) ? d.values : Array.isArray(d.content) ? d.content : [];
+        rows.push(...vals);
+        if (vals.length < 100) break;
+      }
+      g.listValues = rows;
+    } catch (e) { g.loadError = e.message; }
+  }
+  return groups;
+}
+
+// ---------------------------------------------------------------- зведення
+const TAX_FIELDS = {
+  name: [/FULL_NAME/, /^NAME$/, /ПІБ|найменуван/i],
+  tin: [/^TIN$/, /податковий номер|РНОКПП|код/i],
+  address: [/ADR|ADDRESS|MISCE/i, /адрес|місцезнаход|місце прожив/i],
+  sti: [/STI|DPI|NAME_STI/i, /орган ДПС|податков.*орган|ДПІ|контролюючого орган/i],
+};
+
+// Шукає значення в блоці за назвою поля (ключ або підпис у headers)
+function groupValue(g, patterns) {
+  if (!g || !g.values || Array.isArray(g.values)) return null;
+  for (const re of patterns) {
+    for (const [k, v] of Object.entries(g.values)) {
+      if (v == null || v === "") continue;
+      if (re.test(k) || re.test((g.headers || {})[k] || "")) return v;
+    }
+  }
+  return null;
+}
+
+function taxGroups() { return (S.tax && S.tax.card) || []; }
+const taxGroup = (id) => taxGroups().find((g) => g.idGroup === id);
+
+function groupRows(g) {
+  if (!g) return [];
+  if (Array.isArray(g.listValues)) return g.listValues;
+  if (Array.isArray(g.values)) return g.values;
+  return [];
+}
+
+function taxSummary() {
+  const g1 = taxGroup(1), g2 = taxGroup(2), g6 = taxGroup(6), g7 = taxGroup(7), g5 = taxGroup(5), g16 = taxGroup(16);
+  const any = (pats) => groupValue(g1, pats) ?? groupValue(g2, pats);
+  const ep = [];
+  const epSrc = g6 && (g6.values && !Array.isArray(g6.values) ? [g6.values] : groupRows(g6));
+  for (const row of epSrc || []) {
+    const parts = Object.entries(row).filter(([, v]) => v != null && v !== "").map(([k, v]) => `${(g6.headers || {})[k] || k}: ${v}`);
+    if (parts.length) ep.push(parts.join(" · "));
+  }
+  const kved = groupRows(g16).map((r) => {
+    const vals = Object.entries(r).filter(([, v]) => v != null && v !== "");
+    const code = (vals.find(([k, v]) => /KVED|KOD|CODE/i.test(k) || /^\d{2}\.\d{2}$/.test(String(v))) || [])[1];
+    const name = (vals.find(([k]) => /NAME|NAZ/i.test(k)) || [])[1];
+    const main = vals.some(([k, v]) => /MAIN|OSN|IS_?BASIC|PRIZN/i.test(k) && (v === 1 || v === true || /^(1|так|основн)/i.test(String(v))));
+    return { code, name, main, raw: vals };
+  });
+  return {
+    name: any(TAX_FIELDS.name), tin: any(TAX_FIELDS.tin), address: any(TAX_FIELDS.address), sti: any(TAX_FIELDS.sti),
+    ep, kved, vat: g5 && (groupValue(g5, [/.*/]) != null || groupRows(g5).length) ? true : null, esv: g7,
+  };
+}
+
+// ---------------------------------------------------------------- вкладка
+function fmtTaxValue(v) {
+  if (v == null || v === "") return "";
+  if (typeof v === "boolean") return v ? "так" : "ні";
+  return String(v);
+}
+
+function renderGroup(g) {
+  const headers = g.headers || {};
+  let body = "";
+  if (g.values && !Array.isArray(g.values) && Object.keys(g.values).length) {
+    const rows = Object.entries(g.values).filter(([, v]) => v != null && v !== "");
+    body += rows.length ? `<dl class="kv">${rows.map(([k, v]) => `<dt>${esc(headers[k] || k)}</dt><dd>${esc(fmtTaxValue(v))}</dd>`).join("")}</dl>` : "";
+  }
+  const list = groupRows(g);
+  if (list.length) {
+    const cols = [...new Set([...Object.keys(headers).filter((k) => list.some((r) => r[k] != null && r[k] !== "")), ...list.flatMap((r) => Object.keys(r))])]
+      .filter((k) => list.some((r) => r[k] != null && r[k] !== ""));
+    body += `<div class="table-wrap"><table class="table kv-table"><thead><tr>${cols.map((k) => `<th>${esc(headers[k] || k)}</th>`).join("")}</tr></thead>
+      <tbody>${list.map((r) => `<tr>${cols.map((k) => `<td data-label="${esc(headers[k] || k)}">${esc(fmtTaxValue(r[k]))}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+  }
+  if (g.loadError) body += `<p class="error small">Не вдалося завантажити: ${esc(g.loadError)}</p>`;
+  return `<details class="card tax-group" ${body ? "" : "data-empty"}>
+    <summary><span>${esc(g.title || "Блок " + g.idGroup)}</span><span class="muted small">${body ? (list.length ? `записів: ${list.length}` : "") : "немає даних"}</span></summary>
+    ${body || `<p class="muted small">У Кабінеті немає даних цього блоку.</p>`}</details>`;
+}
+
+function loadAccount() {
+  const t = S.tax || {};
+  const hasCard = taxGroups().length > 0;
+  // крок 1-2: підпис і міст
+  // кроки підключення згортаються, коли все працює; при помилці (напр. підпис застарів) — розгортаються
+  const keyReady = TAX_VIA_SERVER ? !!(serverKep && serverKep.kep && serverKep.kep.stored) : !!kepKey;
+  $("#tax-setup").classList.toggle("collapsed", !!(hasCard && keyReady && taxReady() && !t.last_error));
+  if (TAX_VIA_SERVER && !serverKep) loadServerKep().then(() => { if (serverKep && serverKep.kep && serverKep.kep.stored && hasCard && !t.last_error) $("#tax-setup").classList.add("collapsed"); });
+  else renderServerKey();
+  $("#form-tax-bridge").classList.toggle("hidden", TAX_VIA_SERVER);
+  $("#form-tax-bridge").parentElement.classList.toggle("single", TAX_VIA_SERVER);
+  if (TAX_VIA_SERVER) $("#tax-intro").textContent = "Дані беруться з Електронного кабінету платника через його офіційний API. Кабінет пускає лише з кваліфікованим електронним підписом (КЕП): відкрийте свій ключ — решту зробить сервер програми.";
+  $("#tax-tin").value = $("#tax-tin").value || S.settings.owner_tax_id || "";
+  renderKeyStatus();
+  $("#tax-bridge-status").innerHTML = t.bridge_url ? `✓ Міст підключено` : "Міст ще не підключено";
+  if (!t.pending_key) { t.pending_key = randomKey(); S.tax = t; save(); }
+  $("#tax-bridge-code").value = taxBridgeCode(t.bridge_key || t.pending_key);
+  $("#tax-bridge-url").value = t.bridge_url || "";
+  $("#btn-tax-load").disabled = false;
+  $("#tax-meta").textContent = t.fetched_at ? `Оновлено з Кабінету ${new Date(t.fetched_at * 1000).toLocaleString("uk-UA")}` : "";
+  $("#tax-error").hidden = !t.last_error;
+  $("#tax-error").textContent = t.last_error || "";
+
+  if (!hasCard) { $("#tax-summary").innerHTML = ""; $("#tax-groups").innerHTML = ""; return; }
+  const s = taxSummary();
+  const kv = [["Назва ФОП", s.name], ["Код (РНОКПП)", s.tin], ["Адреса", s.address], ["Податкова", s.sti]].filter(([, v]) => v);
+  const mainK = s.kved.filter((k) => k.main), otherK = s.kved.filter((k) => !k.main);
+  $("#tax-summary").innerHTML = `
+    <div class="card tax-main">
+      <dl class="kv kv-main">${kv.map(([k, v]) => `<dt>${k}</dt><dd>${esc(fmtTaxValue(v))}</dd>`).join("")}</dl>
+      ${s.ep.length ? `<h4>Платник єдиного податку</h4><ul class="plain">${s.ep.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : `<p class="muted small">Даних про реєстрацію платником єдиного податку немає.</p>`}
+      ${s.kved.length ? `<h4>КВЕД</h4><ul class="plain kved">${[...mainK, ...otherK].map((k) => `<li>${k.main ? "<b>" : ""}${esc(k.code || "")} ${esc(k.name || k.raw.map(([, v]) => v).join(" · "))}${k.main ? "</b> <span class=\"muted small\">основний</span>" : ""}</li>`).join("")}</ul>` : ""}
+    </div>`;
+  $("#tax-groups").innerHTML = taxGroups().map(renderGroup).join("");
+}
+
+// ---------------------------------------------------------------- ключ, збережений на сервері (режим сервера)
+let serverKep = null; // відповідь /api/server-status
+
+async function loadServerKep() {
+  const r = await api("GET", "/api/server-status");
+  serverKep = r.ok ? r.data : null;
+  renderServerKey();
+}
+
+function renderServerKey() {
+  const box = $("#tax-server-key"), form = $("#form-tax-key");
+  if (!TAX_VIA_SERVER || !serverKep) { box.classList.add("hidden"); return; }
+  const k = serverKep.kep || {};
+  box.classList.remove("hidden");
+  if (!serverKep.node || !serverKep.secret) {
+    box.innerHTML = `<p class="warn small">Збереження ключа на сервері недоступне: ${!serverKep.node ? "на сервері немає Node.js" : "не задано SECRET_KEY у налаштуваннях сервера"}.</p>`;
+    return;
+  }
+  if (k.stored) {
+    const c = k.info || {};
+    const expired = c.validTo && Date.parse(c.validTo) < Date.now();
+    box.innerHTML = `<h3>🔐 Ключ КЕП збережено на сервері</h3>
+      <p class="small ${expired ? "warn" : ""}"><b>${esc(c.name || c.org || "—")}</b>${c.tin ? `, РНОКПП ${esc(c.tin)}` : ""}${c.issuer ? ` · ${esc(c.issuer)}` : ""}${c.validTo ? ` · ${expired ? "⚠ протермінований з" : "діє до"} ${new Date(c.validTo).toLocaleDateString("uk-UA")}` : ""}</p>
+      <p class="muted small">Сервер сам оновлює облікові дані щодня й за кнопкою «Оновити з Кабінету». Ключ зашифровано; він не потрапляє ні в браузер, ні в резервні копії і використовується лише для підпису вашого РНОКПП під час входу до Кабінету. Збережено ${new Date(k.created_at * 1000).toLocaleString("uk-UA")}.</p>
+      <div class="conn-actions"><button class="btn" type="button" id="btn-kep-replace">Замінити ключ</button><button class="btn danger" type="button" id="btn-kep-delete">Видалити ключ із сервера</button></div>`;
+    form.classList.toggle("hidden", !box.dataset.replace);
+  } else {
+    box.innerHTML = `<p class="small">Збережіть ключ на сервері один раз — і облікові дані оновлюватимуться без нього: щодня автоматично та за кнопкою.</p>`;
+    form.classList.remove("hidden");
+  }
+  $("#tax-key-note").textContent = "🔐 Файл ключа й пароль буде збережено на сервері в зашифрованому вигляді (AES-256, ключ шифрування — лише в налаштуваннях сервера). Сервер використовує їх тільки для підпису вашого РНОКПП під час входу до Кабінету. Видалити ключ можна будь-коли.";
+  $("button[type=submit]", form).textContent = "Зберегти ключ на сервері";
+  $("#btn-tax-close-key").classList.add("hidden");
+}
+
+async function saveKepOnServer(files, password) {
+  if (!files.length) throw new Error("Оберіть файл ключа (.pfx, .jks або Key-6.dat)");
+  const b64 = await Promise.all([...files].map(async (f) => {
+    const buf = new Uint8Array(await f.arrayBuffer());
+    let s = ""; for (let i = 0; i < buf.length; i += 0x8000) s += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+    return btoa(s);
+  }));
+  const r = await api("POST", "/api/kep", JSON.stringify({ files: b64, password }));
+  if (!r.ok) throw new Error(r.data.error || "Не вдалося зберегти ключ");
+  return r.data;
+}
+
+async function serverTaxRefresh() {
+  const r = await api("POST", "/api/tax/refresh", "{}");
+  if (!r.ok) throw new Error(r.data.error || "Не вдалося оновити облікові дані");
+  await pollRemote(true);
+  if (r.data.last_error) throw new Error(r.data.last_error);
+}
+
+function renderKeyStatus() {
+  const box = $("#tax-key-status");
+  if (!kepKey) { box.className = "small muted"; box.textContent = "Ключ не відкрито. Він не зберігається: після перезавантаження сторінки відкрийте його знову."; return; }
+  const c = kepKey.info.cert;
+  if (!c) {
+    const msg = {
+      searching: ["small muted", "✓ Ключ відкрито. Шукаю сертифікат ключа на сервері надавача…"],
+      needbridge: ["small muted", "✓ Ключ відкрито. Сертифіката у файлі немає — це звично: програма знайде його на сервері надавача (як сайт Кабінету), щойно ви підключите міст (крок 2)."],
+      oldbridge: ["small warn", "✓ Ключ відкрито. Щоб програма знайшла сертифікат, оновіть код мосту: скопіюйте новий код (крок 2), вставте в редактор скрипта і «Керувати розгортаннями» → ✎ → «Версія»: «Нова версія» → «Розгорнути». Потім натисніть «Підключити міст»."],
+      notfound: ["small warn", "Ключ відкрито, але сертифікат не знайдено на серверах надавачів. Додайте файл сертифіката (.cer) разом із ключем — його можна завантажити на сайті вашого надавача."],
+    }[certSearch] || ["small muted", "✓ Ключ відкрито."];
+    box.className = msg[0]; box.textContent = msg[1]; return;
+  }
+  const expired = c.validTo && Date.parse(c.validTo) < Date.now();
+  box.className = "small " + (expired ? "warn" : "ok");
+  box.innerHTML = `${expired ? "⚠ Сертифікат протермінований" : "✓ Ключ відкрито"}: <b>${esc(c.name || c.org || "—")}</b>`
+    + (c.tin ? `, РНОКПП ${esc(c.tin)}` : "") + (c.issuer ? `<br><span class="muted">${esc(c.issuer)}</span>` : "")
+    + (c.validTo ? `<span class="muted"> · діє до ${new Date(c.validTo).toLocaleDateString("uk-UA")}</span>` : "");
+}
+
+async function refreshPayerCard() {
+  const btn = $("#btn-tax-load");
+  if (TAX_VIA_SERVER && !kepKey) {
+    if (!serverKep || !serverKep.kep || !serverKep.kep.stored) {
+      $("#tax-setup").classList.remove("collapsed");
+      return toast("Спершу збережіть ключ КЕП на сервері (крок 1)", true);
+    }
+    btn.disabled = true; btn.textContent = "Сервер оновлює…";
+    try { await serverTaxRefresh(); toast("Облікові дані оновлено"); }
+    catch (e) { toast(e.message, true); }
+    btn.disabled = false; btn.textContent = "Оновити з Кабінету";
+    loadAccount();
+    return;
+  }
+  if (!taxReady() || !kepKey) {
+    $("#tax-setup").classList.remove("collapsed");
+    const target = !kepKey ? "#tax-key-files" : "#tax-bridge-url";
+    $(target).scrollIntoView({ behavior: "smooth", block: "center" });
+    return toast(!kepKey ? "Спершу відкрийте ключ (крок 1)" : "Спершу підключіть міст (крок 2)", true);
+  }
+  btn.disabled = true; btn.textContent = "Підписую й завантажую…";
+  try {
+    const card = await fetchPayerCard(await getAuth());
+    S.tax.card = card;
+    S.tax.fetched_at = nowTs();
+    S.tax.last_error = null;
+    // ПІБ і РНОКПП потрібні, щоб не рахувати доходом власні перекази
+    const s = taxSummary();
+    const filled = [];
+    if (!S.settings.owner_tax_id && s.tin && /^\d{10}$/.test(String(s.tin))) { S.settings.owner_tax_id = String(s.tin); filled.push("РНОКПП"); }
+    if (!S.settings.owner_name && s.name) { S.settings.owner_name = String(s.name).replace(/^ФОП\s+/i, ""); filled.push("ПІБ"); }
+    if (filled.length) reclassifyAll();
+    log("info", `Облікові дані з Кабінету оновлено, блоків: ${card.length}`);
+    save(true);
+    toast("Облікові дані завантажено" + (filled.length ? `. У Налаштуваннях заповнено: ${filled.join(", ")}` : ""));
+  } catch (e) {
+    S.tax.last_error = e.message; save();
+    toast(e.message, true);
+  }
+  btn.textContent = "Оновити з Кабінету";
+  loadAccount();
+}
+
+function initTaxTab() {
+  if (TAX_VIA_SERVER) {
+    $("#tax-server-key").addEventListener("click", async (e) => {
+      if (e.target.id === "btn-kep-replace") { $("#tax-server-key").dataset.replace = "1"; renderServerKey(); $("#tax-key-files").focus(); }
+      if (e.target.id === "btn-kep-delete") {
+        if (!confirm("Видалити ключ КЕП із сервера? Облікові дані залишаться, але оновлюватись не будуть, доки не збережете ключ знову.")) return;
+        await api("DELETE", "/api/kep", "{}");
+        await loadServerKep(); toast("Ключ видалено із сервера"); loadAccount();
+      }
+    });
+  }
+  if (!S.tax) S.tax = {};
+  // старий спосіб (завантажений .p7s) більше не використовується — не тримаємо підпис у сховищі
+  if (S.tax.auth) { for (const k of ["auth", "auth_name", "auth_tin", "auth_added_at"]) delete S.tax[k]; save(); }
+  $("#form-tax-key").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const btn = $("button[type=submit]", e.target), pw = $("#tax-key-password");
+    if (TAX_VIA_SERVER) {
+      btn.disabled = true; btn.textContent = "Перевіряю й зберігаю ключ…";
+      try {
+        const res = await saveKepOnServer($("#tax-key-files").files, pw.value);
+        pw.value = ""; $("#tax-key-files").value = "";
+        delete $("#tax-server-key").dataset.replace;
+        await pollRemote(true);
+        await loadServerKep();
+        toast(res.tax && res.tax.last_error ? "Ключ збережено, але Кабінет відповів помилкою: " + res.tax.last_error : "Ключ збережено на сервері, облікові дані завантажено", !!(res.tax && res.tax.last_error));
+        loadAccount();
+      } catch (err) { toast(err.message, true); }
+      btn.disabled = false; btn.textContent = "Зберегти ключ на сервері";
+      return;
+    }
+    btn.disabled = true; btn.textContent = "Відкриваю ключ…";
+    try {
+      kepKey = await openKepFiles($("#tax-key-files").files, pw.value);
+      kepAuth = null; certSearch = null;
+      pw.value = "";
+      toast("Ключ відкрито");
+      await ensureCert();
+      const c = kepKey.info.cert;
+      if (c && c.tin) $("#tax-tin").value = c.tin;
+      renderKeyStatus();
+      if (c && taxReady()) refreshPayerCard();
+    } catch (err) { kepKey = null; renderKeyStatus(); toast(err.message, true); }
+    btn.disabled = false; btn.textContent = "Відкрити ключ";
+  });
+  $("#btn-tax-close-key").addEventListener("click", () => { kepKey = null; kepAuth = null; certSearch = null; $("#tax-key-files").value = ""; renderKeyStatus(); toast("Ключ закрито"); });
+  $("#btn-tax-copy").addEventListener("click", async () => {
+    const box = $("#tax-bridge-code");
+    try { await navigator.clipboard.writeText(box.value); toast("Код скопійовано"); }
+    catch { box.focus(); box.select(); toast("Натисніть Cmd+C, щоб скопіювати виділений код"); }
+  });
+  $("#form-tax-bridge").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const { url, error } = cleanBridgeUrl($("#tax-bridge-url").value);
+    if (error) return toast(error, true);
+    const key = S.tax.bridge_key || S.tax.pending_key;
+    const btn = $("button[type=submit]", e.target);
+    btn.disabled = true; btn.textContent = "Перевіряю міст…";
+    try {
+      const version = await taxBridgePing(url, key);
+      Object.assign(S.tax, { bridge_url: url, bridge_key: key, bridge_version: version, last_error: null });
+      save(true);
+      toast(version < TAX_BRIDGE_VERSION ? "Міст підключено, але код застарів — оновіть його (див. крок 1)" : "Міст до Кабінету підключено");
+      loadAccount();
+      if (kepKey && (await ensureCert())) refreshPayerCard();
+    } catch (err) { S.tax.last_error = err.message; save(); loadAccount(); toast(err.message, true); }
+    btn.disabled = false; btn.textContent = "Підключити міст";
+  });
+  $("#btn-tax-load").addEventListener("click", refreshPayerCard);
+  $("#btn-tax-setup").addEventListener("click", () => $("#tax-setup").classList.toggle("collapsed"));
+  $("#btn-tax-forget").addEventListener("click", () => {
+    if (!confirm("Видалити з програми облікові дані й налаштування мосту? Міст у Google залишиться — його можна видалити на script.google.com.")) return;
+    kepKey = null; kepAuth = null;
+    S.tax = { pending_key: randomKey() }; save(true); loadAccount(); toast("Облікові дані видалено");
+  });
+}
+
+"use strict";
+// ФОП-дохід — інтерфейс. Ядро (дані, класифікація, синхронізація) — у sync.js.
 
 // ============================================================ імпорт файлу виписки
 function decodeText(buf) {
@@ -2215,39 +2366,6 @@ function guessMapping(header) {
     if (map.amount !== undefined && (map.amount === map.credit || map.amount === map.debit)) delete map.amount;
   }
   return map;
-}
-
-function parseNum(v) {
-  if (typeof v === "number") return v;
-  const s = String(v ?? "").replace(/[\s ]/g, "").replace(/[^\d,.\-−]/g, "").replace("−", "-");
-  if (!s) return 0;
-  const lastComma = s.lastIndexOf(","), lastDot = s.lastIndexOf(".");
-  const t = lastComma > lastDot ? s.replace(/\./g, "").replace(",", ".") : s.replace(/,/g, "");
-  return Number(t) || 0;
-}
-
-function parseDateTime(dv, tv) {
-  let y, m, d, hh = 12, mi = 0, ss = 0;
-  if (typeof dv === "number") { // серійна дата Excel
-    const ms = Math.round((dv - 25569) * 86400000);
-    const dt = new Date(ms);
-    y = dt.getUTCFullYear(); m = dt.getUTCMonth() + 1; d = dt.getUTCDate();
-    const frac = dv % 1;
-    if (frac) { const sec = Math.round(frac * 86400); hh = Math.floor(sec / 3600); mi = Math.floor(sec / 60) % 60; ss = sec % 60; }
-  } else {
-    const s = String(dv).trim();
-    let mt = s.match(/(\d{1,2})[./-](\d{1,2})[./-](\d{2,4})(?:[ T,]+(\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
-    if (mt) { d = +mt[1]; m = +mt[2]; y = +mt[3] < 100 ? 2000 + +mt[3] : +mt[3]; if (mt[4]) { hh = +mt[4]; mi = +mt[5]; ss = +(mt[6] || 0); } }
-    else if ((mt = s.match(/(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?)?/))) {
-      y = +mt[1]; m = +mt[2]; d = +mt[3]; if (mt[4]) { hh = +mt[4]; mi = +mt[5]; ss = +(mt[6] || 0); }
-    } else return null;
-  }
-  if (tv !== undefined && tv !== "") {
-    if (typeof tv === "number") { const sec = Math.round((tv % 1) * 86400); hh = Math.floor(sec / 3600); mi = Math.floor(sec / 60) % 60; ss = sec % 60; }
-    else { const mt = String(tv).match(/(\d{1,2}):(\d{2})(?::(\d{2}))?/); if (mt) { hh = +mt[1]; mi = +mt[2]; ss = +(mt[3] || 0); } }
-  }
-  const iso = `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
-  return kyivMidnight(iso) + hh * 3600 + mi * 60 + ss;
 }
 
 function hash(s) {
@@ -2712,7 +2830,7 @@ function loadBanks() {
       ${accTable(accounts, true)}</div>`).join("")
     + (files.length ? `<div class="card conn"><div class="conn-head"><div><h3>Імпортовані з файлів</h3><div class="muted small">Щоб оновити — імпортуйте нову виписку, дублікати пропускаються</div></div></div>${accTable(files, false)}</div>` : ""))
     || `<p class="muted">Ще немає підключених банків.</p>`;
-  $("#sync-interval").textContent = "Автооновлення: при відкритті програми та щогодини, поки вона відкрита";
+  $("#sync-interval").textContent = SERVER_MODE ? "Автооновлення: сервер щогодини сам завантажує нові операції — навіть коли програма закрита на всіх пристроях" : "Автооновлення: при відкритті програми та щогодини, поки вона відкрита";
   $("#sync-log").innerHTML = S.log.slice(0, 40).map((l) => `<li class="${l.level}">${new Date(l.ts * 1000).toLocaleString("uk-UA")} — ${esc(l.message)}</li>`).join("") || `<li class="muted">Порожньо</li>`;
 }
 

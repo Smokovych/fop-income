@@ -282,7 +282,10 @@ function loadAccount() {
   const hasCard = taxGroups().length > 0;
   // крок 1-2: підпис і міст
   // кроки підключення згортаються, коли все працює; при помилці (напр. підпис застарів) — розгортаються
-  $("#tax-setup").classList.toggle("collapsed", !!(hasCard && kepKey && taxReady() && !t.last_error));
+  const keyReady = TAX_VIA_SERVER ? !!(serverKep && serverKep.kep && serverKep.kep.stored) : !!kepKey;
+  $("#tax-setup").classList.toggle("collapsed", !!(hasCard && keyReady && taxReady() && !t.last_error));
+  if (TAX_VIA_SERVER && !serverKep) loadServerKep().then(() => { if (serverKep && serverKep.kep && serverKep.kep.stored && hasCard && !t.last_error) $("#tax-setup").classList.add("collapsed"); });
+  else renderServerKey();
   $("#form-tax-bridge").classList.toggle("hidden", TAX_VIA_SERVER);
   $("#form-tax-bridge").parentElement.classList.toggle("single", TAX_VIA_SERVER);
   if (TAX_VIA_SERVER) $("#tax-intro").textContent = "Дані беруться з Електронного кабінету платника через його офіційний API. Кабінет пускає лише з кваліфікованим електронним підписом (КЕП): відкрийте свій ключ — решту зробить сервер програми.";
@@ -310,6 +313,60 @@ function loadAccount() {
   $("#tax-groups").innerHTML = taxGroups().map(renderGroup).join("");
 }
 
+// ---------------------------------------------------------------- ключ, збережений на сервері (режим сервера)
+let serverKep = null; // відповідь /api/server-status
+
+async function loadServerKep() {
+  const r = await api("GET", "/api/server-status");
+  serverKep = r.ok ? r.data : null;
+  renderServerKey();
+}
+
+function renderServerKey() {
+  const box = $("#tax-server-key"), form = $("#form-tax-key");
+  if (!TAX_VIA_SERVER || !serverKep) { box.classList.add("hidden"); return; }
+  const k = serverKep.kep || {};
+  box.classList.remove("hidden");
+  if (!serverKep.node || !serverKep.secret) {
+    box.innerHTML = `<p class="warn small">Збереження ключа на сервері недоступне: ${!serverKep.node ? "на сервері немає Node.js" : "не задано SECRET_KEY у налаштуваннях сервера"}.</p>`;
+    return;
+  }
+  if (k.stored) {
+    const c = k.info || {};
+    const expired = c.validTo && Date.parse(c.validTo) < Date.now();
+    box.innerHTML = `<h3>🔐 Ключ КЕП збережено на сервері</h3>
+      <p class="small ${expired ? "warn" : ""}"><b>${esc(c.name || c.org || "—")}</b>${c.tin ? `, РНОКПП ${esc(c.tin)}` : ""}${c.issuer ? ` · ${esc(c.issuer)}` : ""}${c.validTo ? ` · ${expired ? "⚠ протермінований з" : "діє до"} ${new Date(c.validTo).toLocaleDateString("uk-UA")}` : ""}</p>
+      <p class="muted small">Сервер сам оновлює облікові дані щодня й за кнопкою «Оновити з Кабінету». Ключ зашифровано; він не потрапляє ні в браузер, ні в резервні копії і використовується лише для підпису вашого РНОКПП під час входу до Кабінету. Збережено ${new Date(k.created_at * 1000).toLocaleString("uk-UA")}.</p>
+      <div class="conn-actions"><button class="btn" type="button" id="btn-kep-replace">Замінити ключ</button><button class="btn danger" type="button" id="btn-kep-delete">Видалити ключ із сервера</button></div>`;
+    form.classList.toggle("hidden", !box.dataset.replace);
+  } else {
+    box.innerHTML = `<p class="small">Збережіть ключ на сервері один раз — і облікові дані оновлюватимуться без нього: щодня автоматично та за кнопкою.</p>`;
+    form.classList.remove("hidden");
+  }
+  $("#tax-key-note").textContent = "🔐 Файл ключа й пароль буде збережено на сервері в зашифрованому вигляді (AES-256, ключ шифрування — лише в налаштуваннях сервера). Сервер використовує їх тільки для підпису вашого РНОКПП під час входу до Кабінету. Видалити ключ можна будь-коли.";
+  $("button[type=submit]", form).textContent = "Зберегти ключ на сервері";
+  $("#btn-tax-close-key").classList.add("hidden");
+}
+
+async function saveKepOnServer(files, password) {
+  if (!files.length) throw new Error("Оберіть файл ключа (.pfx, .jks або Key-6.dat)");
+  const b64 = await Promise.all([...files].map(async (f) => {
+    const buf = new Uint8Array(await f.arrayBuffer());
+    let s = ""; for (let i = 0; i < buf.length; i += 0x8000) s += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+    return btoa(s);
+  }));
+  const r = await api("POST", "/api/kep", JSON.stringify({ files: b64, password }));
+  if (!r.ok) throw new Error(r.data.error || "Не вдалося зберегти ключ");
+  return r.data;
+}
+
+async function serverTaxRefresh() {
+  const r = await api("POST", "/api/tax/refresh", "{}");
+  if (!r.ok) throw new Error(r.data.error || "Не вдалося оновити облікові дані");
+  await pollRemote(true);
+  if (r.data.last_error) throw new Error(r.data.last_error);
+}
+
 function renderKeyStatus() {
   const box = $("#tax-key-status");
   if (!kepKey) { box.className = "small muted"; box.textContent = "Ключ не відкрито. Він не зберігається: після перезавантаження сторінки відкрийте його знову."; return; }
@@ -332,6 +389,18 @@ function renderKeyStatus() {
 
 async function refreshPayerCard() {
   const btn = $("#btn-tax-load");
+  if (TAX_VIA_SERVER && !kepKey) {
+    if (!serverKep || !serverKep.kep || !serverKep.kep.stored) {
+      $("#tax-setup").classList.remove("collapsed");
+      return toast("Спершу збережіть ключ КЕП на сервері (крок 1)", true);
+    }
+    btn.disabled = true; btn.textContent = "Сервер оновлює…";
+    try { await serverTaxRefresh(); toast("Облікові дані оновлено"); }
+    catch (e) { toast(e.message, true); }
+    btn.disabled = false; btn.textContent = "Оновити з Кабінету";
+    loadAccount();
+    return;
+  }
   if (!taxReady() || !kepKey) {
     $("#tax-setup").classList.remove("collapsed");
     const target = !kepKey ? "#tax-key-files" : "#tax-bridge-url";
@@ -362,12 +431,36 @@ async function refreshPayerCard() {
 }
 
 function initTaxTab() {
+  if (TAX_VIA_SERVER) {
+    $("#tax-server-key").addEventListener("click", async (e) => {
+      if (e.target.id === "btn-kep-replace") { $("#tax-server-key").dataset.replace = "1"; renderServerKey(); $("#tax-key-files").focus(); }
+      if (e.target.id === "btn-kep-delete") {
+        if (!confirm("Видалити ключ КЕП із сервера? Облікові дані залишаться, але оновлюватись не будуть, доки не збережете ключ знову.")) return;
+        await api("DELETE", "/api/kep", "{}");
+        await loadServerKep(); toast("Ключ видалено із сервера"); loadAccount();
+      }
+    });
+  }
   if (!S.tax) S.tax = {};
   // старий спосіб (завантажений .p7s) більше не використовується — не тримаємо підпис у сховищі
   if (S.tax.auth) { for (const k of ["auth", "auth_name", "auth_tin", "auth_added_at"]) delete S.tax[k]; save(); }
   $("#form-tax-key").addEventListener("submit", async (e) => {
     e.preventDefault();
     const btn = $("button[type=submit]", e.target), pw = $("#tax-key-password");
+    if (TAX_VIA_SERVER) {
+      btn.disabled = true; btn.textContent = "Перевіряю й зберігаю ключ…";
+      try {
+        const res = await saveKepOnServer($("#tax-key-files").files, pw.value);
+        pw.value = ""; $("#tax-key-files").value = "";
+        delete $("#tax-server-key").dataset.replace;
+        await pollRemote(true);
+        await loadServerKep();
+        toast(res.tax && res.tax.last_error ? "Ключ збережено, але Кабінет відповів помилкою: " + res.tax.last_error : "Ключ збережено на сервері, облікові дані завантажено", !!(res.tax && res.tax.last_error));
+        loadAccount();
+      } catch (err) { toast(err.message, true); }
+      btn.disabled = false; btn.textContent = "Зберегти ключ на сервері";
+      return;
+    }
     btn.disabled = true; btn.textContent = "Відкриваю ключ…";
     try {
       kepKey = await openKepFiles($("#tax-key-files").files, pw.value);

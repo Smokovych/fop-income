@@ -179,8 +179,9 @@ async function pushRemote() {
 }
 
 // Підтягує зміни з інших пристроїв
-async function pollRemote() {
+async function pollRemote(force) {
   if (R.pushing || loginWaiter) return;
+  if (force && R.changes) await pushRemote();
   try {
     const meta = await api("GET", "/api/state/meta", undefined, { noLogin: true });
     if (!meta.ok || meta.data.version <= R.version) return;

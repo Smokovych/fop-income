@@ -3,7 +3,10 @@
 dist
 data
 tests
-standalone
+standalone/vendor/kep-entry.js
+standalone/vendor/build-kep.sh
+standalone/template.html
+standalone/build.py
 static
 *.md
 .env
