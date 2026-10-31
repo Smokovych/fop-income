@@ -569,12 +569,28 @@ function renderHistory() {
   const cur = new Date().getFullYear(), startY = +S.settings.sync_start.slice(0, 4);
   const years = []; for (let y = cur; y >= cur - 5; y--) years.push(y);
   $("#history-year").innerHTML = years.map((y) => `<option value="${y}" ${y === Math.min(startY, cur - 1) ? "selected" : ""}>${y} року</option>`).join("");
-  const from = loadedFromIso(), left = remainingWindows() + privatMonthsLeft();
+  const left = remainingWindows() + privatMonthsLeft();
   const mins = Math.max(1, Math.ceil((remainingWindows() * API.monoInterval + privatMonthsLeft() * 6000) / 60000));
+  const banks = [["mono", "Monobank"], ["privat", "ПриватБанк"]].map(([b, name]) => bankHistoryLine(b, name)).filter(Boolean);
   $("#history-info").innerHTML = `Початок обліку: <b>${fmtDate(S.settings.sync_start)}</b>.`
-    + (from ? ` Виписки завантажено з <b>${fmtDate(from)}</b>.` : "")
-    + (left && S.connections.length ? ` Залишилось довантажити ≈ ${mins} хв${SERVER_MODE ? " — сервер продовжить сам, навіть якщо закрити програму" : " — не закривайте вкладку"}.` : "")
-    + ` Monobank віддає виписку лише за 31 день на хвилину, тож кожен рік займає близько 12 хвилин на рахунок. Файли виписок інших банків за минулі роки можна імпортувати на вкладці «Банки».`;
+    + (banks.length ? "<br>" + banks.join("<br>") : "")
+    + (left && S.connections.length ? `<br>Залишилось довантажити ≈ ${mins} хв${SERVER_MODE ? " — сервер продовжить сам, навіть якщо закрити програму" : " — не закривайте вкладку"}.` : "")
+    + `<br>Monobank віддає виписку лише за 31 день на хвилину, тож кожен рік займає близько 12 хвилин на рахунок; ПриватБанк — по місяцю за кілька секунд. Файли виписок інших банків за минулі роки можна імпортувати на вкладці «Банки».`;
+}
+
+// Рядок стану історії для одного банку: з якої дати завантажено, скільки місяців лишилось, найраніша знайдена операція
+function bankHistoryLine(bank, name) {
+  const accs = Object.values(S.accounts).filter((a) => a.enabled && a.bank === bank);
+  if (!accs.length) return "";
+  const dates = accs.map((a) => bank === "privat" ? (a.p_loaded_from || null) : (a.loaded_from && a.loaded_from <= nowTs() ? kyivDate(a.loaded_from) : null));
+  const from = dates.some((d) => !d) ? null : dates.sort()[dates.length - 1];
+  const ids = new Set(accs.map((a) => String(a.id)));
+  let n = 0, first = null;
+  for (const t of Object.values(S.tx)) if (ids.has(String(t.account_id))) { n++; if (!first || t.date < first) first = t.date; }
+  const months = bank === "privat" ? privatMonthsLeft() : remainingWindows();
+  return `<b>${name}</b>: ` + (from ? `виписки завантажено з <b>${fmtDate(from)}</b>` : "виписки ще завантажуються")
+    + (months ? `, лишилось ≈ ${months} міс.` : "")
+    + ` · операцій: ${n}` + (first ? `, найраніша — ${fmtDate(first)}` : "") + ".";
 }
 
 $("#btn-history").addEventListener("click", () => {
