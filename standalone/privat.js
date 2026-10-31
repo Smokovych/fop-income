@@ -237,7 +237,7 @@ async function syncPrivatConnection(conn) {
 
 function privatMonthsLeft() {
   const startIso = S.settings.sync_start;
-  return Object.values(S.accounts).filter((a) => a.bank === "privat" && a.enabled).reduce((n, a) => {
+  return Object.values(S.accounts).filter((a) => a.bank === "privat" && a.enabled && a.connection_id).reduce((n, a) => {
     const from = a.p_loaded_from || kyivDate(nowTs());
     return n + Math.max(0, Math.ceil((kyivMidnight(from) - kyivMidnight(startIso)) / (PRIVAT_CHUNK_DAYS * 86400)));
   }, 0);

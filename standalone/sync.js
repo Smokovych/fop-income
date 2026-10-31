@@ -216,6 +216,8 @@ function makeClassifier() {
     }
     if (dir === "out") return ["expense", "списання"];
     if (!acc.is_fop) return ["other_non_income", "надходження на особистий (не ФОП) рахунок"];
+    // валютна виручка приходить з розподільчого рахунку 2603 банку, де «відправником» вказано самого ФОП
+    if (tx.currency !== "UAH" && /^UA\d{8}0*2603/.test(tx.counter_iban || "")) return ["income", "валютна виручка (з розподільчого рахунку)"];
     if (tx.counter_iban && ownIbans.has(tx.counter_iban)) return ["own_transfer", "з власного рахунку (IBAN)"];
     if (taxId && tx.counter_edrpou === taxId) return ["own_transfer", "відправник — ваш РНОКПП"];
     if (isOwner(tx.counter_name)) return ["own_transfer", "відправник — ви"];
@@ -344,7 +346,9 @@ async function storeTransactions(acc, items) {
   const classify = makeClassifier();
   let added = 0;
   for (const it of items) {
-    const id = `${acc.bank}:${it.ext_id}`;
+    let id = `${acc.bank}:${it.ext_id}`;
+    // переказ між двома своїми рахунками одного банку має однаковий референс в обох — друга сторона отримує свій id
+    if (S.tx[id] && S.tx[id].account_id !== acc.id) id = `${acc.bank}:${it.ext_id}@${acc.id}`;
     const old = S.tx[id];
     const t = Object.assign(old || { id, account_id: acc.id, manual_category: null, note: "" }, it, { date: kyivDate(it.ts) });
     delete t.ext_id;
@@ -512,7 +516,7 @@ function syncTimeUp() { return typeof SYNC_DEADLINE !== "undefined" && Date.now(
 
 function remainingWindows() {
   const startTs = kyivMidnight(S.settings.sync_start);
-  return Object.values(S.accounts).filter((a) => a.bank === "mono" && a.enabled)
+  return Object.values(S.accounts).filter((a) => a.bank === "mono" && a.enabled && a.connection_id)
     .reduce((n, a) => n + (a.loaded_from == null ? Math.ceil((nowTs() - startTs) / MONO_MAX) : Math.max(0, Math.ceil((a.loaded_from - startTs) / MONO_MAX))), 0);
 }
 

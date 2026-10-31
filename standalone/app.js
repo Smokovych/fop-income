@@ -115,6 +115,82 @@ function rowsToTx(rows, headerIdx, map) {
   return out;
 }
 
+// ---------------------------------------------------------------- виписка ПриватБанку (Приват24 для бізнесу → «Виписка», Excel)
+// Шапка: «Поточний рахунок № UA…, валюта UAH/980», далі рядок колонок «№ | Дата проводки | Час проводки | Сума | Валюта |
+// [Курс НБУ | Сума еквівалент у гривні] | Призначення платежу | ЄДРПОУ | Назва контрагента | Рахунок контрагента | МФО | Референс».
+// Референс = REF.REFN — той самий ідентифікатор, що дає API, тож файл і API не створюють дублів.
+function parsePrivatStatement(rows) {
+  let iban = null, currency = null, hi = -1;
+  for (let i = 0; i < Math.min(rows.length, 40); i++) {
+    const line = rows[i].map((c) => String(c ?? "")).join(" ");
+    const m = line.match(/рахунок\s*№\s*(UA\d{27})(?:.*?валюта\s*([A-Z]{3}))?/i);
+    if (m && !iban) { iban = m[1].toUpperCase(); currency = (m[2] || "").toUpperCase() || null; }
+    const r = rows[i].map((c) => norm(c));
+    if (r.includes(norm("Дата проводки")) && r.includes(norm("Референс"))) { hi = i; break; }
+  }
+  if (!iban || hi < 0) return null;
+  const h = rows[hi].map((c) => norm(c));
+  const col = (name) => h.indexOf(norm(name));
+  const c = { date: col("Дата проводки"), time: col("Час проводки"), sum: col("Сума"), cur: col("Валюта"), desc: col("Призначення платежу"),
+    edrpou: col("ЄДРПОУ"), name: col("Назва контрагента"), cacc: col("Рахунок контрагента"), ref: col("Референс") };
+  if (c.date < 0 || c.sum < 0) return null;
+  const txs = [], seen = {};
+  for (const r of rows.slice(hi + 1)) {
+    const g = (k) => (c[k] < 0 ? "" : String(r[c[k]] ?? "").trim());
+    const ts = parseDateTime(g("date"), g("time") || undefined);
+    if (ts == null) continue;
+    const amount = Math.round(parseNum(r[c.sum]) * 100);
+    if (!amount) continue;
+    const t = { ts, amount, currency: (g("cur") || currency || "UAH").toUpperCase(), description: g("desc"), comment: "",
+      counter_name: g("name"), counter_edrpou: g("edrpou"), counter_iban: g("cacc"), hold: 0 };
+    let id = g("ref");
+    if (!id) id = "f" + hash([t.ts, t.amount, t.description, t.counter_iban].join("|"));
+    seen[id] = (seen[id] || 0) + 1;
+    t.ext_id = id + (seen[id] > 1 ? "~" + seen[id] : "");
+    txs.push(t);
+  }
+  return { iban, currency: currency || (txs[0] && txs[0].currency) || "UAH", txs };
+}
+
+async function importPrivatStatement(st) {
+  const id = `privat:${st.iban}`;
+  if (!S.accounts[id]) {
+    // рахунку немає серед підключених через API (закритий або API не підключено) — створюємо рахунок лише з файлу
+    S.accounts[id] = { id, connection_id: null, bank: "privat", ext_id: st.iban, iban: st.iban, currency: st.currency, type: "business",
+      name: `ПриватБанк ФОП ${st.currency} …${st.iban.slice(-4)}`, balance: null, is_fop: true, enabled: true };
+  }
+  const acc = S.accounts[id];
+  const added = await storeTransactions(acc, st.txs);
+  const dates = st.txs.map((t) => kyivDate(t.ts)).sort();
+  log("info", `Виписка ПриватБанку ${acc.name}: нових операцій ${added} з ${st.txs.length}` + (dates.length ? ` (${fmtDate(dates[0])} – ${fmtDate(dates[dates.length - 1])})` : ""));
+  return { acc, added, total: st.txs.length };
+}
+
+$("#btn-stmt-file").addEventListener("click", () => $("#stmt-file").click());
+$("#stmt-file").addEventListener("change", async (e) => {
+  const files = [...e.target.files];
+  e.target.value = "";
+  if (!files.length) return;
+  const btn = $("#btn-stmt-file");
+  btn.disabled = true; btn.textContent = "Завантажую…";
+  const done = [], bad = [];
+  try {
+    for (const f of files) {
+      try {
+        const st = parsePrivatStatement(await readRows(f));
+        if (!st) { bad.push(f.name); continue; }
+        const r = await importPrivatStatement(st);
+        done.push(`…${st.iban.slice(-4)} ${st.currency}: +${r.added} з ${r.total}`);
+      } catch (err) { bad.push(`${f.name} (${err.message})`); }
+    }
+    save(true);
+    if (done.length) toast(`Виписку завантажено. ${done.join("; ")}`);
+    if (bad.length) toast(`Не схоже на виписку ПриватБанку: ${bad.join(", ")}. Файли інших банків імпортуйте на вкладці «Банки».`, true);
+    refreshActive();
+    if (!$("#history-panel").classList.contains("hidden")) renderHistory();
+  } finally { btn.disabled = false; btn.textContent = "Завантажити виписку"; }
+});
+
 let pendingImport = null;
 
 async function startImport(file, accountName) {
@@ -374,7 +450,13 @@ addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setT
 
 // ============================================================ операції
 // Джерело операції: підключення банку («conn:ID») або імпорт з файлів («file»)
-const sourceOf = (acc) => (acc.bank === "file" || acc.connection_id == null ? "file" : "conn:" + acc.connection_id);
+// Рахунок банку, завантажений лише з файлу (напр. закритий), належить до джерела цього банку, а не до «Імпорт з файлів»
+const BANK_NAMES = { privat: "ПриватБанк", mono: "Monobank" };
+function sourceOf(acc) {
+  if (acc.connection_id != null) return "conn:" + acc.connection_id;
+  if (BANK_NAMES[acc.bank]) { const c = S.connections.find((x) => x.bank === acc.bank); return c ? "conn:" + c.id : "bank:" + acc.bank; }
+  return "file";
+}
 
 function filteredTx() {
   const f = { from: $("#f-from").value, to: $("#f-to").value, acc: $("#f-account").value, src: $("#f-source").value, cat: $("#f-category").value, dir: $("#f-direction").value, q: norm($("#f-q").value) };
@@ -502,6 +584,7 @@ $("#filters-toggle").addEventListener("click", () => {
 function renderSourceFilter() {
   const cur = $("#f-source").value;
   const opts = S.connections.map((c) => [`conn:${c.id}`, c.name]);
+  for (const b of Object.keys(BANK_NAMES)) if (Object.values(S.accounts).some((a) => sourceOf(a) === "bank:" + b)) opts.push(["bank:" + b, BANK_NAMES[b]]);
   if (Object.values(S.accounts).some((a) => sourceOf(a) === "file")) opts.push(["file", "Імпорт з файлів"]);
   $("#f-source").innerHTML = `<option value="">Усі</option>` + opts.map(([v, n]) => `<option value="${esc(v)}" ${v === cur ? "selected" : ""}>${esc(n)}</option>`).join("");
 }
@@ -559,7 +642,7 @@ function updateFiltersToggle() {
 // ---------------------------------------------------------------- попередні роки
 function loadedFromIso() {
   // найраніша дата, з якої виписки вже завантажено (по всіх рахунках, що тягнуться через API)
-  const dates = Object.values(S.accounts).filter((a) => a.enabled && (a.bank === "mono" || a.bank === "privat")).map((a) =>
+  const dates = Object.values(S.accounts).filter((a) => a.enabled && a.connection_id && (a.bank === "mono" || a.bank === "privat")).map((a) =>
     a.bank === "privat" ? (a.p_loaded_from || null) : (a.loaded_from && a.loaded_from <= nowTs() ? kyivDate(a.loaded_from) : null));
   if (!dates.length || dates.some((d) => !d)) return null;
   return dates.sort()[dates.length - 1];
@@ -582,13 +665,14 @@ function renderHistory() {
 function bankHistoryLine(bank, name) {
   const accs = Object.values(S.accounts).filter((a) => a.enabled && a.bank === bank);
   if (!accs.length) return "";
-  const dates = accs.map((a) => bank === "privat" ? (a.p_loaded_from || null) : (a.loaded_from && a.loaded_from <= nowTs() ? kyivDate(a.loaded_from) : null));
-  const from = dates.some((d) => !d) ? null : dates.sort()[dates.length - 1];
+  const api = accs.filter((a) => a.connection_id);
+  const dates = api.map((a) => bank === "privat" ? (a.p_loaded_from || null) : (a.loaded_from && a.loaded_from <= nowTs() ? kyivDate(a.loaded_from) : null));
+  const from = !dates.length || dates.some((d) => !d) ? null : dates.sort()[dates.length - 1];
   const ids = new Set(accs.map((a) => String(a.id)));
   let n = 0, first = null;
   for (const t of Object.values(S.tx)) if (ids.has(String(t.account_id))) { n++; if (!first || t.date < first) first = t.date; }
   const months = bank === "privat" ? privatMonthsLeft() : remainingWindows();
-  return `<b>${name}</b>: ` + (from ? `виписки завантажено з <b>${fmtDate(from)}</b>` : "виписки ще завантажуються")
+  return `<b>${name}</b>: ` + (from ? `виписки завантажено з <b>${fmtDate(from)}</b>` : api.length ? "виписки ще завантажуються" : "лише з файлів")
     + (months ? `, лишилось ≈ ${months} міс.` : "")
     + ` · операцій: ${n}` + (first ? `, найраніша — ${fmtDate(first)}` : "") + ".";
 }
