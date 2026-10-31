@@ -126,7 +126,7 @@ const DEFAULT_RULES = [
   ["гривні від продажу", "any", "in", "currency_exchange", 10, 2],
   ["продаж uah", "any", "in", "currency_exchange", 10, 2],
 ].map(([pattern, field, direction, category, priority, since = 1], i) => ({ id: i + 1, pattern, field, direction, category, priority, since }));
-const RULES_VERSION = 2;
+const RULES_VERSION = 3; // v3: валютна виручка з рахунку 2603 — перекласифікувати збережені операції
 
 // ============================================================ сховище
 const STORE_KEY = "fopIncome.v1";

@@ -901,6 +901,7 @@ if ((S.rulesVersion || 1) < RULES_VERSION) {
   S.rulesVersion = RULES_VERSION;
   const n = reclassifyAll();
   if (added.length) log("info", `Додано стандартні правила: ${added.map((r) => "«" + r.pattern + "»").join(", ")}; перекласифіковано операцій: ${n}`);
+  else if (n) log("info", `Оновлено класифікацію, перекласифіковано операцій: ${n}`);
   save(true);
 }
 if (S.commissionParser !== COMMISSION_PARSER_VERSION) {
