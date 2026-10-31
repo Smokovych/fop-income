@@ -59,7 +59,7 @@ function makeContext(api) {
   ctx.globalThis = ctx; ctx.window = ctx; ctx.self = ctx;
   vm.createContext(ctx);
   const pre = `const SERVER_MODE = false; const PRIVAT_DIRECT_API = ${JSON.stringify(api.privat)};
-    const SYNC_DEADLINE = Date.now() + ${Number(api.maxRunMs) || 40 * 60 * 1000}; // довга історія — частинами, решта наступного запуску
+    const SYNC_DEADLINE = Date.now() + ${Number(api.maxRunMs) || 8 * 60 * 1000}; // довга історія — частинами по кілька хвилин, кожна зберігається
     async function acquireSyncLock() { return true; } function releaseSyncLock() {}
     function toast(msg, isError) { console.log((isError ? "! " : "") + msg); } function refreshActive() {}
     function loadBanks() {} function loadAccount() {} function updateReviewBadge() {}\n`;
@@ -81,7 +81,7 @@ function makeContext(api) {
       catch (e) { throw new Error("Сервер не зміг з'єднатися з Кабінетом: " + e.message); }
       return { status: "SUCCESS", http: r.status, body: await r.text() };
     }
-    this.__fop = { get S() { return S; }, load, syncAll, fetchPayerCard, fetchBudget, taxSummary, reclassifyAll, log, kyivDate, nowTs };`;
+    this.__fop = { get S() { return S; }, load, syncAll, backlog: () => remainingWindows() + privatMonthsLeft(), fetchPayerCard, fetchBudget, taxSummary, reclassifyAll, log, kyivDate, nowTs };`;
   const code = pre + SOURCES.map((f) => fs.readFileSync(path.join(ROOT, "standalone", f), "utf8")).join("\n;\n") + post;
   ctx.atob = (s) => Buffer.from(s, "base64").toString("binary");
   ctx.btoa = (s) => Buffer.from(s, "binary").toString("base64");
@@ -108,8 +108,11 @@ async function main() {
   const F = ctx.__fop;
   if (req.cmd === "sync") {
     F.load(req.state);
+    const before = F.backlog();
     await F.syncAll();
-    return { state: F.S };
+    const after = F.backlog();
+    // ще є що довантажувати і цей запуск просунувся — сервер одразу запустить наступну частину
+    return { state: F.S, more: after > 0 && after < before };
   }
   if (req.cmd === "kep-store") {
     const key = await openStoredKey(ctx, req.files || [], req.password || "", null);

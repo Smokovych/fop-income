@@ -55,7 +55,7 @@ def kep_secret():
 def api_config():
     return {"mono": config.MONO_API, "nbu": config.NBU_API, "privat": config.PRIVAT_API, "tax": config.TAX_API,
             "cmpTest": config.CMP_TEST_URL or "", "monoInterval": int(config.MONO_MIN_INTERVAL_SEC * 1000),
-            "maxRunMs": int(os.environ.get("SYNC_MAX_RUN_SEC", "2400")) * 1000}
+            "maxRunMs": int(os.environ.get("SYNC_MAX_RUN_SEC", "480")) * 1000}
 
 
 def run_node(req, timeout=3000):
@@ -153,10 +153,10 @@ def sync_banks():
         return False  # зараз оновлює браузер — спробуємо наступного разу
     status["running"] = "sync"
     try:
-        out = run_node({"cmd": "sync", "state": state})
+        out = run_node({"cmd": "sync", "state": state}, timeout=1200)
         apply_result(state, out["state"])
         status["last_sync_at"], status["last_error"] = int(time.time()), None
-        return True
+        return "more" if out.get("more") else True
     except WorkerError as e:
         status["last_error"] = str(e)
         raise
@@ -213,7 +213,9 @@ def _loop():
     while True:
         status["next_at"] = int(time.time()) + config.SYNC_INTERVAL_MIN * 60
         try:
-            sync_banks()
+            if sync_banks() == "more":
+                # історія ще довантажується: частину збережено, наступна — за хвилину
+                status["next_at"] = int(time.time()) + 60
         except WorkerError as e:
             print("Фонове оновлення виписок:", e)
         except Exception:
