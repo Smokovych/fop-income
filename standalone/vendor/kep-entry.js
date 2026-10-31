@@ -18,9 +18,25 @@ function makeBox() {
   return new jk.Box({ algo: Object.assign({}, a, { hashes: { Gost34311: a.hash, Dstu4145le: a.hash } }) });
 }
 
+// РНОКПП власника з сертифіката. Надавачі записують його по-різному: розширення «реквізити»
+// (ДРФО, OID 1.2.804.2.1.1.1.11.1.4.1.1 / .4.7.1), serialNumber суб'єкта «TINUA-…» або просто 10 цифр.
+// Якщо бібліотека не розібрала розширення, шукаємо ці записи прямо в байтах сертифіката.
+function certTin(cert) {
+  const s = cert.subject || {}, ipn = (cert.extension || {}).ipn || {};
+  const digits = (v) => (String(v || "").match(/(?:^|\D)(\d{10})(?!\d)/) || [])[1] || null;
+  let tin = digits(ipn.DRFO) || (String(s.serialNumber || "").match(/TINUA-(\d{10})/) || [])[1]
+    || (/^\d{10}$/.test(String(s.serialNumber || "")) ? String(s.serialNumber) : null);
+  if (tin) return tin;
+  let der = "";
+  try { der = Buffer.from(cert.as_asn1()).toString("latin1"); } catch (e) { return null; }
+  const m = der.match(/TINUA-(\d{10})/)
+    || der.match(/\x2a\x86\x24\x02\x01\x01\x01\x0b\x01\x04[\x01\x07]\x01\x31[\s\S]\x13[\s\S](\d{10})/);
+  return m ? m[1] : null;
+}
+
 function certInfo(cert) {
   const s = cert.subject || {}, ext = cert.extension || {}, ipn = ext.ipn || {};
-  const tin = ipn.DRFO || (String(s.serialNumber || "").match(/TINUA-(\d{10})/) || [])[1] || null;
+  const tin = certTin(cert);
   return {
     name: s.commonName || [s.surname, s.givenName].filter(Boolean).join(" ") || null,
     org: s.organizationName || null,
@@ -117,3 +133,4 @@ export async function verify(b64) {
     content: p.signed ? Buffer.from(res.content).toString("utf8") : null,
     signer: p.cert ? (p.cert.subject || {}).commonName || null : null };
 }
+export { certTin as _certTin }; // для тестів

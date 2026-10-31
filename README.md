@@ -137,7 +137,7 @@ Dockerfile, render.yaml, railway.json   розгортання
 
 ```bash
 python3 -m unittest discover -s tests -v
-node tests/merge.test.js
+node tests/merge.test.js && node tests/kep.test.js
 
 # демо з вигаданими даними:
 python3 -m tests.mock_banks 8090 &

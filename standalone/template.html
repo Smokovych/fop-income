@@ -122,7 +122,7 @@
                 <input type="file" id="tax-key-files" multiple accept=".pfx,.p12,.jks,.dat,.zs2,.sk,.pk8,.key,.cer,.crt,.pem"></label>
               <label class="field">Пароль ключа
                 <input type="password" id="tax-key-password" autocomplete="off" spellcheck="false"></label>
-              <label class="field">РНОКПП<span class="muted small"> — береться із сертифіката; вкажіть, якщо його там немає</span>
+              <label class="field hidden" id="tax-tin-field">РНОКПП<span class="muted small"> — у сертифікаті вашого ключа його немає, тож вкажіть вручну (10 цифр)</span>
                 <input id="tax-tin" inputmode="numeric" maxlength="10" placeholder="1234567890" autocomplete="off"></label>
               <div class="conn-actions"><button class="btn primary" type="submit">Відкрити ключ</button><button class="btn" type="button" id="btn-tax-close-key">Закрити ключ</button></div>
               <p id="tax-key-status" class="small muted"></p>

@@ -84,6 +84,20 @@ async function openKepFiles(files, password) {
   return FopKep.openKey(bufs, password);
 }
 
+// Поле РНОКПП показуємо, лише якщо коду немає ні в сертифікаті ключа, ні в Налаштуваннях
+function updateTinField(certTin) {
+  const need = certTin === null && !S.settings.owner_tax_id;
+  $("#tax-tin-field").classList.toggle("hidden", !need);
+  if (need) $("#tax-tin").focus();
+  return need;
+}
+
+// Введений вручну РНОКПП запам'ятовуємо в Налаштуваннях — він потрібен і для класифікації власних переказів
+function rememberTin() {
+  const v = $("#tax-tin").value.trim();
+  if (/^\d{10}$/.test(v) && S.settings.owner_tax_id !== v) { S.settings.owner_tax_id = v; reclassifyAll(); save(true); }
+}
+
 function kepTin() {
   return (kepKey && kepKey.info.cert && kepKey.info.cert.tin) || $("#tax-tin").value.trim() || S.settings.owner_tax_id || "";
 }
@@ -120,7 +134,7 @@ async function getAuth() {
   }
   if (!(await ensureCert())) throw new Error("Немає сертифіката ключа — див. крок 1.");
   const tin = kepTin();
-  if (!/^\d{8,10}$/.test(tin)) throw new Error("Вкажіть РНОКПП — 10 цифр (у сертифікаті ключа його не знайдено)");
+  if (!/^\d{8,10}$/.test(tin)) { updateTinField(null); throw new Error("У сертифікаті ключа немає РНОКПП — вкажіть його в полі «РНОКПП» (крок 1)"); }
   if (!kepAuth || kepAuth.tin !== tin) kepAuth = { tin, b64: await kepKey.sign(tin) };
   return kepAuth.b64;
 }
@@ -290,6 +304,7 @@ function loadAccount() {
   $("#form-tax-bridge").parentElement.classList.toggle("single", TAX_VIA_SERVER);
   if (TAX_VIA_SERVER) $("#tax-intro").textContent = "Дані беруться з Електронного кабінету платника через його офіційний API. Кабінет пускає лише з кваліфікованим електронним підписом (КЕП): відкрийте свій ключ — решту зробить сервер програми.";
   $("#tax-tin").value = $("#tax-tin").value || S.settings.owner_tax_id || "";
+  if (kepKey && kepKey.info.cert) updateTinField(kepKey.info.cert.tin || null);
   renderKeyStatus();
   $("#tax-bridge-status").innerHTML = t.bridge_url ? `✓ Міст підключено` : "Міст ще не підключено";
   if (!t.pending_key) { t.pending_key = randomKey(); S.tax = t; save(); }
@@ -337,6 +352,8 @@ function renderServerKey() {
     box.innerHTML = `<h3>🔐 Ключ КЕП збережено на сервері</h3>
       <p class="small ${expired ? "warn" : ""}"><b>${esc(c.name || c.org || "—")}</b>${c.tin ? `, РНОКПП ${esc(c.tin)}` : ""}${c.issuer ? ` · ${esc(c.issuer)}` : ""}${c.validTo ? ` · ${expired ? "⚠ протермінований з" : "діє до"} ${new Date(c.validTo).toLocaleDateString("uk-UA")}` : ""}</p>
       <p class="muted small">Сервер сам оновлює облікові дані щодня й за кнопкою «Оновити з Кабінету». Ключ зашифровано; він не потрапляє ні в браузер, ні в резервні копії і використовується лише для підпису вашого РНОКПП під час входу до Кабінету. Збережено ${new Date(k.created_at * 1000).toLocaleString("uk-UA")}.</p>
+      ${!c.tin && !S.settings.owner_tax_id ? `<div class="inline-form warn small"><span>У сертифікаті ключа немає РНОКПП — вкажіть його:</span>
+        <input id="kep-tin" inputmode="numeric" maxlength="10" placeholder="1234567890"><button class="btn primary" type="button" id="btn-kep-tin">Зберегти й оновити</button></div>` : ""}
       <div class="conn-actions"><button class="btn" type="button" id="btn-kep-replace">Замінити ключ</button><button class="btn danger" type="button" id="btn-kep-delete">Видалити ключ із сервера</button></div>`;
     form.classList.toggle("hidden", !box.dataset.replace);
   } else {
@@ -361,6 +378,7 @@ async function saveKepOnServer(files, password) {
 }
 
 async function serverTaxRefresh() {
+  await flushRemote(); // сервер має бачити свіжі налаштування (напр. щойно введений РНОКПП)
   const r = await api("POST", "/api/tax/refresh", "{}");
   if (!r.ok) throw new Error(r.data.error || "Не вдалося оновити облікові дані");
   await pollRemote(true);
@@ -395,6 +413,7 @@ async function refreshPayerCard() {
       return toast("Спершу збережіть ключ КЕП на сервері (крок 1)", true);
     }
     btn.disabled = true; btn.textContent = "Сервер оновлює…";
+    rememberTin();
     try { await serverTaxRefresh(); toast("Облікові дані оновлено"); }
     catch (e) { toast(e.message, true); }
     btn.disabled = false; btn.textContent = "Оновити з Кабінету";
@@ -433,6 +452,13 @@ async function refreshPayerCard() {
 function initTaxTab() {
   if (TAX_VIA_SERVER) {
     $("#tax-server-key").addEventListener("click", async (e) => {
+      if (e.target.id === "btn-kep-tin") {
+        const v = $("#kep-tin").value.trim();
+        if (!/^\d{10}$/.test(v)) return toast("РНОКПП — 10 цифр", true);
+        S.settings.owner_tax_id = v; reclassifyAll(); save(true);
+        renderServerKey();
+        return refreshPayerCard();
+      }
       if (e.target.id === "btn-kep-replace") { $("#tax-server-key").dataset.replace = "1"; renderServerKey(); $("#tax-key-files").focus(); }
       if (e.target.id === "btn-kep-delete") {
         if (!confirm("Видалити ключ КЕП із сервера? Облікові дані залишаться, але оновлюватись не будуть, доки не збережете ключ знову.")) return;
@@ -450,12 +476,16 @@ function initTaxTab() {
     if (TAX_VIA_SERVER) {
       btn.disabled = true; btn.textContent = "Перевіряю й зберігаю ключ…";
       try {
+        rememberTin();
+        await flushRemote();
         const res = await saveKepOnServer($("#tax-key-files").files, pw.value);
         pw.value = ""; $("#tax-key-files").value = "";
         delete $("#tax-server-key").dataset.replace;
         await pollRemote(true);
         await loadServerKep();
-        toast(res.tax && res.tax.last_error ? "Ключ збережено, але Кабінет відповів помилкою: " + res.tax.last_error : "Ключ збережено на сервері, облікові дані завантажено", !!(res.tax && res.tax.last_error));
+        const noTin = !(res.info && res.info.tin) && !S.settings.owner_tax_id;
+        toast(noTin ? "Ключ збережено. У сертифікаті немає РНОКПП — вкажіть його у віконці вгорі"
+          : res.tax && res.tax.last_error ? "Ключ збережено, але Кабінет відповів помилкою: " + res.tax.last_error : "Ключ збережено на сервері, облікові дані завантажено", noTin || !!(res.tax && res.tax.last_error));
         loadAccount();
       } catch (err) { toast(err.message, true); }
       btn.disabled = false; btn.textContent = "Зберегти ключ на сервері";
@@ -471,7 +501,9 @@ function initTaxTab() {
       const c = kepKey.info.cert;
       if (c && c.tin) $("#tax-tin").value = c.tin;
       renderKeyStatus();
-      if (c && taxReady()) refreshPayerCard();
+      rememberTin();
+      if (c && updateTinField(c.tin || null)) toast("У сертифікаті ключа немає РНОКПП — вкажіть його й натисніть «Оновити з Кабінету»", true);
+      else if (c && taxReady()) refreshPayerCard();
     } catch (err) { kepKey = null; renderKeyStatus(); toast(err.message, true); }
     btn.disabled = false; btn.textContent = "Відкрити ключ";
   });

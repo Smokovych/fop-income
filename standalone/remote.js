@@ -178,6 +178,15 @@ async function pushRemote() {
   }
 }
 
+// Негайно записати локальні зміни на сервер (перед дією, яку сервер виконує з цими даними)
+async function flushRemote() {
+  if (!SERVER_MODE) return;
+  for (let i = 0; i < 100 && (R.pushing || R.changes); i++) {
+    if (!R.pushing && R.changes) { clearTimeout(R.timer); await pushRemote(); }
+    else await sleep(100);
+  }
+}
+
 // Підтягує зміни з інших пристроїв
 async function pollRemote(force) {
   if (R.pushing || loginWaiter) return;
