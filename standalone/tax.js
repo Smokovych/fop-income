@@ -11,22 +11,29 @@
 
 const TAX_ALLOWED_HINT = "payer_card, payer_card/{група}";
 
+const TAX_BRIDGE_VERSION = 2;
+
 function taxBridgeCode(key) {
+  const cmpUrls = typeof FopKep !== "undefined" ? FopKep.CMP_URLS : [];
   return `// Міст ФОП-дохід → Електронний кабінет платника (лише читання облікових даних)
+// + пошук сертифіката вашого ключа на сервері надавача (CMP), як це робить сайт Кабінету
 const ACCESS_KEY = ${JSON.stringify(key)};
+const VERSION = ${TAX_BRIDGE_VERSION};
 const BASE = 'https://cabinet.tax.gov.ua/ws/public_api/';
 const ALLOWED = /^payer_card(\\/\\d{1,2})?$/;
 const PARAMS = ['page', 'size'];
+const CMP = ${JSON.stringify(cmpUrls)};
 
 function doGet(e) {
   const p = (e && e.parameter) || {};
-  return out_({ status: 'SUCCESS', bridge: 'ok', kind: 'tax', version: 1, keyOk: p.key === ACCESS_KEY });
+  return out_({ status: 'SUCCESS', bridge: 'ok', kind: 'tax', version: VERSION, keyOk: p.key === ACCESS_KEY });
 }
 
 function doPost(e) {
   let p;
   try { p = JSON.parse(e.postData.contents); } catch (err) { return out_({ status: 'ERROR', message: 'Некоректний запит' }); }
   if (p.key !== ACCESS_KEY) return out_({ status: 'ERROR', message: 'Невірний ключ доступу до мосту. Скопіюйте код мосту з програми ще раз.' });
+  if (p.path === 'cmp') return cmp_(p);
   if (!ALLOWED.test(p.path || '')) return out_({ status: 'ERROR', message: 'Недозволений запит' });
   if (!p.auth) return out_({ status: 'ERROR', message: 'Немає підпису' });
   const q = PARAMS.filter(function (k) { return p.params && p.params[k] != null; })
@@ -43,6 +50,18 @@ function doPost(e) {
   return out_({ status: 'SUCCESS', http: r.getResponseCode(), body: r.getContentText('UTF-8') });
 }
 
+// Запит сертифіката за ідентифікатором відкритого ключа — лише до серверів надавачів зі списку
+function cmp_(p) {
+  if (CMP.indexOf(p.url) < 0) return out_({ status: 'ERROR', message: 'Недозволена адреса' });
+  try {
+    const r = UrlFetchApp.fetch(p.url, { method: 'post', contentType: 'application/octet-stream',
+      payload: Utilities.base64Decode(p.body || ''), muteHttpExceptions: true });
+    return out_({ status: 'SUCCESS', http: r.getResponseCode(), body64: Utilities.base64Encode(r.getContent()) });
+  } catch (err) {
+    return out_({ status: 'SUCCESS', http: 0, body64: '', message: String(err) });
+  }
+}
+
 function out_(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
 }
@@ -52,6 +71,7 @@ function out_(obj) {
 // ---------------------------------------------------------------- ключ (лише в пам'яті)
 let kepKey = null;      // відкритий ключ: { info, sign(text) }
 let kepAuth = null;     // готовий підпис РНОКПП на цю сесію: { tin, b64 }
+let certSearch = null;  // null | "searching" | "notfound" | "needbridge" | "oldbridge"
 
 async function openKepFiles(files, password) {
   if (typeof FopKep === "undefined") throw new Error("Бібліотека підпису не завантажилась. Оновіть сторінку.");
@@ -65,12 +85,37 @@ function kepTin() {
   return (kepKey && kepKey.info.cert && kepKey.info.cert.tin) || $("#tax-tin").value.trim() || S.settings.owner_tax_id || "";
 }
 
+// Сертифікат ключа: спершу збережений раніше (він публічний), далі — пошук у надавача через міст
+async function ensureCert() {
+  if (!kepKey || kepKey.info.hasCert) return true;
+  if (S.tax.cert_b64 && kepKey.addCerts([S.tax.cert_b64])) return true;
+  if (!S.tax.bridge_url) { certSearch = "needbridge"; renderKeyStatus(); return false; }
+  if ((S.tax.bridge_version || 1) < TAX_BRIDGE_VERSION) { certSearch = "oldbridge"; renderKeyStatus(); return false; }
+  certSearch = "searching"; renderKeyStatus();
+  try {
+    const r = await kepKey.findCert(async (url, bodyB64) => {
+      const w = await bridgePost({ path: "cmp", url, body: bodyB64 });
+      return { status: w.http, bodyB64: w.body64 };
+    });
+    if (r.ok) {
+      S.tax.cert_b64 = kepKey.info.certB64; save(true);
+      certSearch = null;
+      log("info", `Сертифікат ключа знайдено на ${r.url.replace(/^https?:\/\//, "").split("/")[0]}`);
+    } else certSearch = "notfound";
+  } catch (e) { certSearch = "notfound"; toast(e.message, true); }
+  const c = kepKey.info.cert;
+  if (c && c.tin) $("#tax-tin").value = c.tin;
+  renderKeyStatus();
+  return kepKey.info.hasCert;
+}
+
 async function getAuth() {
   if (!kepKey) {
     const err = new Error("Відкрийте ключ (крок 1) — ключ не зберігається, тому після перезавантаження сторінки його треба відкрити знову.");
     err.code = "NOKEY";
     throw err;
   }
+  if (!(await ensureCert())) throw new Error("Немає сертифіката ключа — див. крок 1.");
   const tin = kepTin();
   if (!/^\d{8,10}$/.test(tin)) throw new Error("Вкажіть РНОКПП — 10 цифр (у сертифікаті ключа його не знайдено)");
   if (!kepAuth || kepAuth.tin !== tin) kepAuth = { tin, b64: await kepKey.sign(tin) };
@@ -78,7 +123,7 @@ async function getAuth() {
 }
 
 // ---------------------------------------------------------------- запити через міст
-async function taxCall(path, params, auth) {
+async function bridgePost(payload) {
   const t = S.tax || {};
   if (!t.bridge_url) throw new Error("Спершу підключіть міст до Кабінету (крок 2)");
   let r;
@@ -86,7 +131,7 @@ async function taxCall(path, params, auth) {
     r = await fetch(t.bridge_url, {
       method: "POST", redirect: "follow",
       headers: { "Content-Type": "text/plain;charset=utf-8" }, // без попереднього запиту CORS
-      body: JSON.stringify({ key: t.bridge_key, path, params: params || {}, auth }),
+      body: JSON.stringify(Object.assign({ key: t.bridge_key }, payload)),
     });
   } catch {
     const err = new Error("Програма не може прочитати відповідь мосту до Кабінету. Перевірте розгортання в Google: доступ «Усі», адреса /exec, нова версія коду.");
@@ -99,6 +144,11 @@ async function taxCall(path, params, auth) {
   catch { throw new Error(/<html/i.test(text) ? "Міст відповів сторінкою Google замість даних. У розгортанні оберіть доступ «Усі»." : "Міст повернув некоректну відповідь"); }
   if (w.status !== "SUCCESS") throw new Error(w.message || "Помилка мосту");
   if (w.bridge) throw new Error("Це адреса старого мосту або мосту ПриватБанку. Для Кабінету потрібен окремий міст з кодом із цієї вкладки.");
+  return w;
+}
+
+async function taxCall(path, params, auth) {
+  const w = await bridgePost({ path, params: params || {}, auth });
   let body = null;
   try { body = w.body ? JSON.parse(w.body) : null; } catch {}
   if (w.http === 401 || w.http === 403) {
@@ -118,6 +168,7 @@ async function taxBridgePing(url, key) {
   if (!data) throw new Error("Міст відповів не тим, що очікувалось. Перевірте, що вставили код мосту саме з цієї вкладки.");
   if (data.kind !== "tax") throw new Error("Це міст для ПриватБанку або старий код. Для Кабінету створіть окремий міст з кодом із цієї вкладки.");
   if (data.keyOk === false) throw new Error("Міст відповідає, але ключ у ньому інший. Скопіюйте код мосту з програми ще раз і оновіть розгортання («Нова версія»).");
+  return data.version || 1;
 }
 
 // Завантажує всі облікові дані; блоки-списки без даних догружає окремо
@@ -254,7 +305,15 @@ function renderKeyStatus() {
   const box = $("#tax-key-status");
   if (!kepKey) { box.className = "small muted"; box.textContent = "Ключ не відкрито. Він не зберігається: після перезавантаження сторінки відкрийте його знову."; return; }
   const c = kepKey.info.cert;
-  if (!c) { box.className = "small warn"; box.textContent = "Ключ відкрито, але в ньому немає сертифіката. Додайте файл сертифіката (.cer) разом із ключем."; return; }
+  if (!c) {
+    const msg = {
+      searching: ["small muted", "✓ Ключ відкрито. Шукаю сертифікат ключа на сервері надавача…"],
+      needbridge: ["small muted", "✓ Ключ відкрито. Сертифіката у файлі немає — це звично: програма знайде його на сервері надавача (як сайт Кабінету), щойно ви підключите міст (крок 2)."],
+      oldbridge: ["small warn", "✓ Ключ відкрито. Щоб програма знайшла сертифікат, оновіть код мосту: скопіюйте новий код (крок 2), вставте в редактор скрипта і «Керувати розгортаннями» → ✎ → «Версія»: «Нова версія» → «Розгорнути». Потім натисніть «Підключити міст»."],
+      notfound: ["small warn", "Ключ відкрито, але сертифікат не знайдено на серверах надавачів. Додайте файл сертифіката (.cer) разом із ключем — його можна завантажити на сайті вашого надавача."],
+    }[certSearch] || ["small muted", "✓ Ключ відкрито."];
+    box.className = msg[0]; box.textContent = msg[1]; return;
+  }
   const expired = c.validTo && Date.parse(c.validTo) < Date.now();
   box.className = "small " + (expired ? "warn" : "ok");
   box.innerHTML = `${expired ? "⚠ Сертифікат протермінований" : "✓ Ключ відкрито"}: <b>${esc(c.name || c.org || "—")}</b>`
@@ -303,20 +362,18 @@ function initTaxTab() {
     btn.disabled = true; btn.textContent = "Відкриваю ключ…";
     try {
       kepKey = await openKepFiles($("#tax-key-files").files, pw.value);
-      kepAuth = null;
+      kepAuth = null; certSearch = null;
       pw.value = "";
+      toast("Ключ відкрито");
+      await ensureCert();
       const c = kepKey.info.cert;
       if (c && c.tin) $("#tax-tin").value = c.tin;
       renderKeyStatus();
-      if (!c) toast("Ключ відкрито, але сертифіката немає — додайте файл .cer", true);
-      else {
-        toast("Ключ відкрито");
-        if (S.tax.bridge_url) refreshPayerCard();
-      }
+      if (c && S.tax.bridge_url) refreshPayerCard();
     } catch (err) { kepKey = null; renderKeyStatus(); toast(err.message, true); }
     btn.disabled = false; btn.textContent = "Відкрити ключ";
   });
-  $("#btn-tax-close-key").addEventListener("click", () => { kepKey = null; kepAuth = null; $("#tax-key-files").value = ""; renderKeyStatus(); toast("Ключ закрито"); });
+  $("#btn-tax-close-key").addEventListener("click", () => { kepKey = null; kepAuth = null; certSearch = null; $("#tax-key-files").value = ""; renderKeyStatus(); toast("Ключ закрито"); });
   $("#btn-tax-copy").addEventListener("click", async () => {
     const box = $("#tax-bridge-code");
     try { await navigator.clipboard.writeText(box.value); toast("Код скопійовано"); }
@@ -330,12 +387,12 @@ function initTaxTab() {
     const btn = $("button[type=submit]", e.target);
     btn.disabled = true; btn.textContent = "Перевіряю міст…";
     try {
-      await taxBridgePing(url, key);
-      Object.assign(S.tax, { bridge_url: url, bridge_key: key, last_error: null });
+      const version = await taxBridgePing(url, key);
+      Object.assign(S.tax, { bridge_url: url, bridge_key: key, bridge_version: version, last_error: null });
       save(true);
-      toast("Міст до Кабінету підключено");
+      toast(version < TAX_BRIDGE_VERSION ? "Міст підключено, але код застарів — оновіть його (див. крок 1)" : "Міст до Кабінету підключено");
       loadAccount();
-      if (kepKey) refreshPayerCard();
+      if (kepKey && (await ensureCert())) refreshPayerCard();
     } catch (err) { S.tax.last_error = err.message; save(); loadAccount(); toast(err.message, true); }
     btn.disabled = false; btn.textContent = "Підключити міст";
   });
