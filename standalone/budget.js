@@ -141,7 +141,17 @@ function loadTaxes() {
         <td><div>${esc(o.namevid || o.vidpa || "")}</div>${o.templ && o.templ.trim() ? `<div class="muted small">${esc(o.templ.trim())}</div>` : ""}</td>
         <td class="num" data-label="Списано">${num(o.narah0) ? money(num(o.narah0)) : ""}</td>
         <td class="num" data-label="Сплачено / повернуто">${num(o.splpov0) ? `<span class="pos">${money(num(o.splpov0))}</span>` : ""}</td></tr>`).join("")
-        || `<tr><td colspan="4" class="muted">${it.opsError ? "Не вдалося завантажити операції: " + esc(it.opsError) : "Операцій за рік немає"}</td></tr>`}</tbody></table></div></div>`;
+        || `<tr><td colspan="4" class="muted">${it.opsError ? "Не вдалося завантажити операції: " + esc(it.opsError) : "Операцій за рік немає"}</td></tr>`}</tbody></table></div></div>
+    <details class="card raw-data"><summary>Дані з Кабінету як є (для перевірки)</summary>
+      <p class="muted small">Відповідь API «Стан розрахунків з бюджетом» по цьому платежу: спершу підсумок (ta/splatp), далі операції (…/pa).</p>
+      <div class="conn-actions"><button class="btn small" type="button" id="btn-raw-copy">Скопіювати</button><button class="btn small" type="button" id="btn-raw-all">Завантажити все (JSON)</button></div>
+      <pre id="raw-json">${esc(JSON.stringify(rawOf(it), null, 2))}</pre></details>`;
+}
+
+// підсумок і операції так, як їх повернув Кабінет (без службових полів програми)
+function rawOf(it) {
+  const { ops, opsError, ...summary } = it;
+  return { "ta/splatp": summary, "pa (операції)": ops || [] };
 }
 
 function parseDdmm(s) {
@@ -176,7 +186,16 @@ function initTaxesTab() {
     const b = e.target.closest("button[data-key]");
     if (b) { taxesActive = b.dataset.key; loadTaxes(); }
   });
-  $("#taxes-body").addEventListener("click", (e) => { if (e.target.id === "btn-tax-req") openRequisites(); });
+  $("#taxes-body").addEventListener("click", async (e) => {
+    if (e.target.id === "btn-tax-req") openRequisites();
+    if (e.target.id === "btn-raw-copy") {
+      try { await navigator.clipboard.writeText($("#raw-json").textContent); toast("Скопійовано"); } catch { toast("Не вдалося скопіювати", true); }
+    }
+    if (e.target.id === "btn-raw-all") {
+      const b = S.tax.budget || {};
+      download(`stan-rozrakhunkiv_${b.year || ""}.json`, JSON.stringify((b.items || []).map(rawOf), null, 2), "application/json");
+    }
+  });
   $("#btn-taxes-refresh").addEventListener("click", () => refreshPayerCard());
   $("#tax-req-dialog").addEventListener("click", async (e) => {
     if (e.target.dataset.copy) {

@@ -349,3 +349,6 @@ p.small.warn { padding: 8px 12px; }
   .budget-table td.num:empty { display: none; }
   .budget-table td.num::before { content: attr(data-label) ": "; color: var(--muted); }
 }
+.raw-data { margin-top: 12px; }
+.raw-data summary { cursor: pointer; color: var(--text-2); }
+.raw-data pre { max-height: 420px; overflow: auto; background: var(--surface-2); padding: 10px; border-radius: 8px; font: 12px/1.45 ui-monospace, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
