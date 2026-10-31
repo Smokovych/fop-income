@@ -359,15 +359,24 @@ async function storeTransactions(acc, items) {
 
 // ============================================================ Monobank
 let monoLast = 0;
+// Тимчасові збої (сервер програми перезапускається, банк перевантажений): 502/503/504 і обрив зв'язку
+const TRANSIENT = new Set([502, 503, 504]);
+function transientError(msg) { const e = new Error(msg); e.transient = true; return e; }
+
 async function monoGet(token, path) {
-  for (let attempt = 0; attempt < 4; attempt++) {
+  let fails = 0;
+  for (let attempt = 0; attempt < 7; attempt++) {
     const wait = monoLast + API.monoInterval - Date.now();
     if (wait > 0) { setStatus(statusText, Math.ceil(wait / 1000)); await sleep(wait); }
     monoLast = Date.now();
     let r;
     try { r = await fetch(API.mono + path, { headers: { "X-Token": token } }); }
-    catch { throw new Error("Немає з'єднання з Monobank"); }
+    catch { if (++fails <= 3) { await sleep(5000 * fails); continue; } throw transientError("Немає з'єднання з Monobank"); }
     if (r.status === 429) continue; // занадто часто — чекаємо і пробуємо ще
+    if (TRANSIENT.has(r.status)) {
+      if (++fails <= 3) { await sleep(10000 * fails); continue; }
+      throw transientError("Monobank тимчасово не відповідає (HTTP " + r.status + ") — спробую пізніше");
+    }
     const data = await r.json().catch(() => null);
     if (!r.ok) throw new Error((data && data.errorDescription) || "Monobank: HTTP " + r.status);
     return data;
@@ -529,6 +538,7 @@ function renderBanner() {
 if (typeof document !== "undefined" && document.addEventListener) document.addEventListener("click", (e) => { if (e.target.id === "banner-resume") syncAll(); });
 
 async function syncAll(onlyConnId, userInitiated = false) {
+  let retryLater = false;
   if (syncing) { syncQueued = true; return; }
   syncing = true;
   if (!(await acquireSyncLock())) {
@@ -561,9 +571,15 @@ async function syncAll(onlyConnId, userInitiated = false) {
         conn.last_sync_at = nowTs();
         conn.last_error = null;
       } catch (e) {
-        conn.last_error = e.message;
-        log("error", `${conn.name}: ${e.message}`);
-        toast(`${conn.name}: ${e.message}`, true);
+        if (e.transient) {
+          // тимчасовий збій: не показуємо як помилку підключення, повторимо за кілька хвилин
+          log("warn", `${conn.name}: ${e.message}`);
+          retryLater = true;
+        } else {
+          conn.last_error = e.message;
+          log("error", `${conn.name}: ${e.message}`);
+          toast(`${conn.name}: ${e.message}`, true);
+        }
       }
       save(true);
     }
@@ -576,6 +592,7 @@ async function syncAll(onlyConnId, userInitiated = false) {
     renderBanner();
     refreshActive();
     if (syncQueued) { syncQueued = false; syncAll(); }
+    else if (retryLater && typeof window !== "undefined" && window.document && window.document.body) setTimeout(() => syncAll(onlyConnId), 3 * 60 * 1000);
   }
 }
 

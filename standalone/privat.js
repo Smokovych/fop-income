@@ -121,8 +121,13 @@ async function privatGetServer(conn, path, params) {
   const q = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) if (v != null && v !== "") q.set(k, v);
   let r;
-  try { r = await fetch(`/proxy/privat/${path}?${q}`, { headers: { "X-Privat-Token": conn.token }, credentials: "same-origin" }); }
-  catch { throw new Error("Немає зв'язку з сервером програми"); }
+  for (let fails = 1; ; fails++) {
+    try { r = await fetch(`/proxy/privat/${path}?${q}`, { headers: { "X-Privat-Token": conn.token }, credentials: "same-origin" }); }
+    catch { r = null; }
+    if (r && !TRANSIENT.has(r.status)) break;
+    if (fails > 3) throw transientError(r ? `ПриватБанк тимчасово не відповідає (HTTP ${r.status}) — спробую пізніше` : "Немає зв'язку з сервером програми — спробую пізніше");
+    await sleep(10000 * fails); // сервер програми перезапускається або банк перевантажений
+  }
   const data = await r.json().catch(() => null);
   if (!data) throw new Error("ПриватБанк: некоректна відповідь (HTTP " + r.status + ")");
   if (data.error && !data.status) throw new Error(data.error);
