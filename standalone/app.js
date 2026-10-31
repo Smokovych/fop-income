@@ -294,7 +294,7 @@ function loadOverview() {
     ["Дохід за " + state.year, money(s.total_income), `${s.months.reduce((a, m) => a + m.count, 0)} надходжень`],
     [`Дохід за ${q.quarter} кв.`, money(q.net_income), isCur ? "поточний квартал" : ""],
     [`Єдиний податок ${s.params.single_tax_rate}% за рік`, money(s.single_tax_total), `за ${q.quarter} кв.: ${money(q.single_tax)}`],
-    [`Військовий збір ${s.params.mil_rate}% за рік`, money(s.military_total), s.esv_enabled ? `ЄСВ: ${money(s.params.esv_month)}/міс` : "ЄСВ не сплачується"],
+    [`Військовий збір ${s.params.mil_rate}% за рік`, money(s.military_total), `за ${q.quarter} кв.: ${money(q.military)}`],
   ].map(([l, v, sub]) => `<div class="kpi"><div class="label">${esc(l)}</div><div class="value">${v}</div><div class="sub">${esc(sub)}</div></div>`).join("");
 
   const fill = $("#limit-fill");
