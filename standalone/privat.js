@@ -208,7 +208,7 @@ async function syncPrivatAccount(conn, acc) {
   }
   acc.p_loaded_to = todayIso;
   save();
-  while (acc.p_loaded_from > startIso) {
+  while (acc.p_loaded_from > startIso && !syncTimeUp()) {
     const end = shift(acc.p_loaded_from, -1);
     const begin = [shift(end, -(PRIVAT_CHUNK_DAYS - 1)), startIso].sort().pop();
     syncProgress.current = acc;

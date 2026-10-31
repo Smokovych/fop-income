@@ -59,6 +59,7 @@ function makeContext(api) {
   ctx.globalThis = ctx; ctx.window = ctx; ctx.self = ctx;
   vm.createContext(ctx);
   const pre = `const SERVER_MODE = false; const PRIVAT_DIRECT_API = ${JSON.stringify(api.privat)};
+    const SYNC_DEADLINE = Date.now() + ${Number(api.maxRunMs) || 40 * 60 * 1000}; // довга історія — частинами, решта наступного запуску
     async function acquireSyncLock() { return true; } function releaseSyncLock() {}
     function toast(msg, isError) { console.log((isError ? "! " : "") + msg); } function refreshActive() {}
     function loadBanks() {} function loadAccount() {} function updateReviewBadge() {}\n`;

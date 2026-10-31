@@ -215,7 +215,7 @@ function summary(year) {
     return {
       quarter: +q, income: inc / 100, refunds: ref / 100, net_income: net / 100, cumulative: cum / 100,
       single_tax: Math.round(base * p.single_tax_rate) / 100, military: Math.round(base * p.mil_rate) / 100,
-      esv: S.settings.esv_enabled ? Math.round(p.esv_month * 300) / 100 : 0,
+      esv: S.settings.esv_enabled ? Math.round(((p.esv_q && p.esv_q[+q - 1]) || p.esv_month) * 300) / 100 : 0,
       deadlines: quarterDeadlines(year, +q), started: `${year}-${String(m1).padStart(2, "0")}-01` <= today,
     };
   });
@@ -401,6 +401,7 @@ function loadTransactions(reset) {
   $("#tx-table").innerHTML = `<thead><tr><th>Дата</th><th>Контрагент / призначення</th><th>Рахунок</th><th class="num">Надійшло / списано</th><th class="num" title="Комісія еквайрингу, утримана банком. Береться з призначення платежу; клацніть, щоб змінити">Комісія</th><th class="num" title="Надійшло + комісія, у гривні за курсом НБУ. Ця сума йде в Книгу обліку доходів і декларацію">Дохід, грн</th><th>Категорія</th></tr></thead>
     <tbody>${rows || `<tr><td colspan="7" class="muted">Операцій немає</td></tr>`}</tbody>`;
   $("#btn-more").classList.toggle("hidden", state.txShown >= all.length);
+  if (!$("#history-panel").classList.contains("hidden")) renderHistory();
 }
 
 function commCell(t) {
@@ -498,6 +499,48 @@ function updateFiltersToggle() {
 ["#f-from", "#f-to", "#f-account", "#f-category", "#f-direction"].forEach((id) => $(id).addEventListener("change", updateFiltersToggle));
 ["#f-from", "#f-to", "#f-account", "#f-category", "#f-direction", "#f-q"].forEach((id) =>
   $(id).addEventListener("input", () => { clearTimeout(filterTimer); filterTimer = setTimeout(() => loadTransactions(true), 200); }));
+// ---------------------------------------------------------------- попередні роки
+function loadedFromIso() {
+  // найраніша дата, з якої виписки вже завантажено (по всіх рахунках, що тягнуться через API)
+  const dates = Object.values(S.accounts).filter((a) => a.enabled && (a.bank === "mono" || a.bank === "privat")).map((a) =>
+    a.bank === "privat" ? (a.p_loaded_from || null) : (a.loaded_from && a.loaded_from <= nowTs() ? kyivDate(a.loaded_from) : null));
+  if (!dates.length || dates.some((d) => !d)) return null;
+  return dates.sort()[dates.length - 1];
+}
+
+function renderHistory() {
+  const cur = new Date().getFullYear(), startY = +S.settings.sync_start.slice(0, 4);
+  const years = []; for (let y = cur; y >= cur - 5; y--) years.push(y);
+  $("#history-year").innerHTML = years.map((y) => `<option value="${y}" ${y === Math.min(startY, cur - 1) ? "selected" : ""}>${y} року</option>`).join("");
+  const from = loadedFromIso(), left = remainingWindows() + privatMonthsLeft();
+  const mins = Math.max(1, Math.ceil((remainingWindows() * API.monoInterval + privatMonthsLeft() * 6000) / 60000));
+  $("#history-info").innerHTML = `Початок обліку: <b>${fmtDate(S.settings.sync_start)}</b>.`
+    + (from ? ` Виписки завантажено з <b>${fmtDate(from)}</b>.` : "")
+    + (left && S.connections.length ? ` Залишилось довантажити ≈ ${mins} хв${SERVER_MODE ? " — сервер продовжить сам, навіть якщо закрити програму" : " — не закривайте вкладку"}.` : "")
+    + ` Monobank віддає виписку лише за 31 день на хвилину, тож кожен рік займає близько 12 хвилин на рахунок. Файли виписок інших банків за минулі роки можна імпортувати на вкладці «Банки».`;
+}
+
+$("#btn-history").addEventListener("click", () => {
+  const p = $("#history-panel");
+  p.classList.toggle("hidden");
+  if (!p.classList.contains("hidden")) renderHistory();
+});
+
+$("#btn-history-load").addEventListener("click", () => {
+  const y = Number($("#history-year").value), iso = `${y}-01-01`;
+  if (!S.connections.length) return toast("Немає підключених банків. Додайте Monobank або ПриватБанк на вкладці «Банки» або імпортуйте файл виписки.", true);
+  if (iso >= S.settings.sync_start) {
+    toast(`Виписки з ${y} року вже входять в облік — довантажую, якщо чогось бракує`);
+  } else {
+    S.settings.sync_start = iso;
+    log("info", `Початок обліку змінено на ${fmtDate(iso)} — довантаження історії`);
+    save(true);
+    toast(`Завантажую виписки з ${y} року. Операції з'являтимуться поступово${SERVER_MODE ? "; сервер продовжить сам, якщо закрити програму" : ""}.`);
+  }
+  syncAll(null, true);
+  renderHistory();
+});
+
 $("#btn-more").addEventListener("click", () => { state.txShown += 200; loadTransactions(false); });
 
 $("#btn-export").addEventListener("click", (e) => {

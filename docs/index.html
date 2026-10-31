@@ -323,6 +323,9 @@ label.field input { width: 100%; }
 .small.ok { color: var(--good); }
 p.small.warn { padding: 8px 12px; }
 .grid-2.single { grid-template-columns: minmax(0, 640px); }
+.history-panel { margin-bottom: 12px; }
+.history-panel .inline-form { align-items: center; }
+.history-panel select { width: auto; }
 </style>
 </head>
 <body>
@@ -396,7 +399,18 @@ p.small.warn { padding: 8px 12px; }
       <section id="tab-transactions" class="tab hidden">
         <div class="section-head">
           <h2>Операції</h2>
-          <a class="btn" id="btn-export" href="#" role="button">Книга обліку доходів (CSV)</a>
+          <div class="conn-actions">
+            <button class="btn" type="button" id="btn-history">Попередні роки</button>
+            <a class="btn" id="btn-export" href="#" role="button">Книга обліку доходів (CSV)</a>
+          </div>
+        </div>
+        <div class="card history-panel hidden" id="history-panel">
+          <div class="inline-form">
+            <span>Завантажити виписки з</span>
+            <select id="history-year" aria-label="Рік"></select>
+            <button class="btn primary" type="button" id="btn-history-load">Завантажити</button>
+          </div>
+          <p class="muted small" id="history-info"></p>
         </div>
         <div class="filters card" id="tx-filters">
           <button type="button" class="btn filters-toggle" id="filters-toggle" aria-expanded="false" aria-controls="tx-filters">Фільтри</button>
@@ -857,7 +871,7 @@ async function syncPrivatAccount(conn, acc) {
   }
   acc.p_loaded_to = todayIso;
   save();
-  while (acc.p_loaded_from > startIso) {
+  while (acc.p_loaded_from > startIso && !syncTimeUp()) {
     const end = shift(acc.p_loaded_from, -1);
     const begin = [shift(end, -(PRIVAT_CHUNK_DAYS - 1)), startIso].sort().pop();
     syncProgress.current = acc;
@@ -1302,7 +1316,12 @@ const CATEGORIES = {
   expense: "Витрата",
 };
 
+// Ліміт 3 групи = 1167 мінімальних зарплат на 1 січня. ЄСВ — мінімальний внесок на місяць; esv_q — помісячно для
+// кожного кварталу, якщо протягом року змінювався. Військовий збір для платників ЄП — з 2025 року.
 const DEFAULT_TAX = {
+  2022: { min_wage: 6500, income_limit: 7585500, esv_month: 1430, esv_q: [1430, 1430, 1430, 1474], single_tax_rate: 5, mil_rate: 0 },
+  2023: { min_wage: 6700, income_limit: 7818900, esv_month: 1474, single_tax_rate: 5, mil_rate: 0 },
+  2024: { min_wage: 7100, income_limit: 8285700, esv_month: 1760, esv_q: [1562, 1760, 1760, 1760], single_tax_rate: 5, mil_rate: 0 },
   2025: { min_wage: 8000, income_limit: 9336000, esv_month: 1760, single_tax_rate: 5, mil_rate: 1 },
   2026: { min_wage: 8647, income_limit: 10091049, esv_month: 1902.34, single_tax_rate: 5, mil_rate: 1 },
 };
@@ -1690,7 +1709,7 @@ async function syncMonoAccount(conn, acc) {
   }
   save();
   // догрузка історії назад
-  while (acc.loaded_from > startTs) {
+  while (acc.loaded_from > startTs && !syncTimeUp()) {
     const end = acc.loaded_from - 1;
     const begin = Math.max(startTs, end - MONO_MAX + 1);
     syncProgress.current = acc;
@@ -1706,6 +1725,9 @@ async function syncMonoAccount(conn, acc) {
 }
 
 const syncProgress = { current: null };
+// Межа часу одного запуску синхронізації (задає фоновий воркер сервера); у браузері — без обмежень
+function syncTimeUp() { return typeof SYNC_DEADLINE !== "undefined" && Date.now() > SYNC_DEADLINE; }
+
 function remainingWindows() {
   const startTs = kyivMidnight(S.settings.sync_start);
   return Object.values(S.accounts).filter((a) => a.bank === "mono" && a.enabled)
@@ -2549,7 +2571,7 @@ function summary(year) {
     return {
       quarter: +q, income: inc / 100, refunds: ref / 100, net_income: net / 100, cumulative: cum / 100,
       single_tax: Math.round(base * p.single_tax_rate) / 100, military: Math.round(base * p.mil_rate) / 100,
-      esv: S.settings.esv_enabled ? Math.round(p.esv_month * 300) / 100 : 0,
+      esv: S.settings.esv_enabled ? Math.round(((p.esv_q && p.esv_q[+q - 1]) || p.esv_month) * 300) / 100 : 0,
       deadlines: quarterDeadlines(year, +q), started: `${year}-${String(m1).padStart(2, "0")}-01` <= today,
     };
   });
@@ -2735,6 +2757,7 @@ function loadTransactions(reset) {
   $("#tx-table").innerHTML = `<thead><tr><th>Дата</th><th>Контрагент / призначення</th><th>Рахунок</th><th class="num">Надійшло / списано</th><th class="num" title="Комісія еквайрингу, утримана банком. Береться з призначення платежу; клацніть, щоб змінити">Комісія</th><th class="num" title="Надійшло + комісія, у гривні за курсом НБУ. Ця сума йде в Книгу обліку доходів і декларацію">Дохід, грн</th><th>Категорія</th></tr></thead>
     <tbody>${rows || `<tr><td colspan="7" class="muted">Операцій немає</td></tr>`}</tbody>`;
   $("#btn-more").classList.toggle("hidden", state.txShown >= all.length);
+  if (!$("#history-panel").classList.contains("hidden")) renderHistory();
 }
 
 function commCell(t) {
@@ -2832,6 +2855,48 @@ function updateFiltersToggle() {
 ["#f-from", "#f-to", "#f-account", "#f-category", "#f-direction"].forEach((id) => $(id).addEventListener("change", updateFiltersToggle));
 ["#f-from", "#f-to", "#f-account", "#f-category", "#f-direction", "#f-q"].forEach((id) =>
   $(id).addEventListener("input", () => { clearTimeout(filterTimer); filterTimer = setTimeout(() => loadTransactions(true), 200); }));
+// ---------------------------------------------------------------- попередні роки
+function loadedFromIso() {
+  // найраніша дата, з якої виписки вже завантажено (по всіх рахунках, що тягнуться через API)
+  const dates = Object.values(S.accounts).filter((a) => a.enabled && (a.bank === "mono" || a.bank === "privat")).map((a) =>
+    a.bank === "privat" ? (a.p_loaded_from || null) : (a.loaded_from && a.loaded_from <= nowTs() ? kyivDate(a.loaded_from) : null));
+  if (!dates.length || dates.some((d) => !d)) return null;
+  return dates.sort()[dates.length - 1];
+}
+
+function renderHistory() {
+  const cur = new Date().getFullYear(), startY = +S.settings.sync_start.slice(0, 4);
+  const years = []; for (let y = cur; y >= cur - 5; y--) years.push(y);
+  $("#history-year").innerHTML = years.map((y) => `<option value="${y}" ${y === Math.min(startY, cur - 1) ? "selected" : ""}>${y} року</option>`).join("");
+  const from = loadedFromIso(), left = remainingWindows() + privatMonthsLeft();
+  const mins = Math.max(1, Math.ceil((remainingWindows() * API.monoInterval + privatMonthsLeft() * 6000) / 60000));
+  $("#history-info").innerHTML = `Початок обліку: <b>${fmtDate(S.settings.sync_start)}</b>.`
+    + (from ? ` Виписки завантажено з <b>${fmtDate(from)}</b>.` : "")
+    + (left && S.connections.length ? ` Залишилось довантажити ≈ ${mins} хв${SERVER_MODE ? " — сервер продовжить сам, навіть якщо закрити програму" : " — не закривайте вкладку"}.` : "")
+    + ` Monobank віддає виписку лише за 31 день на хвилину, тож кожен рік займає близько 12 хвилин на рахунок. Файли виписок інших банків за минулі роки можна імпортувати на вкладці «Банки».`;
+}
+
+$("#btn-history").addEventListener("click", () => {
+  const p = $("#history-panel");
+  p.classList.toggle("hidden");
+  if (!p.classList.contains("hidden")) renderHistory();
+});
+
+$("#btn-history-load").addEventListener("click", () => {
+  const y = Number($("#history-year").value), iso = `${y}-01-01`;
+  if (!S.connections.length) return toast("Немає підключених банків. Додайте Monobank або ПриватБанк на вкладці «Банки» або імпортуйте файл виписки.", true);
+  if (iso >= S.settings.sync_start) {
+    toast(`Виписки з ${y} року вже входять в облік — довантажую, якщо чогось бракує`);
+  } else {
+    S.settings.sync_start = iso;
+    log("info", `Початок обліку змінено на ${fmtDate(iso)} — довантаження історії`);
+    save(true);
+    toast(`Завантажую виписки з ${y} року. Операції з'являтимуться поступово${SERVER_MODE ? "; сервер продовжить сам, якщо закрити програму" : ""}.`);
+  }
+  syncAll(null, true);
+  renderHistory();
+});
+
 $("#btn-more").addEventListener("click", () => { state.txShown += 200; loadTransactions(false); });
 
 $("#btn-export").addEventListener("click", (e) => {

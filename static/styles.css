@@ -315,3 +315,6 @@ label.field input { width: 100%; }
 .small.ok { color: var(--good); }
 p.small.warn { padding: 8px 12px; }
 .grid-2.single { grid-template-columns: minmax(0, 640px); }
+.history-panel { margin-bottom: 12px; }
+.history-panel .inline-form { align-items: center; }
+.history-panel select { width: auto; }

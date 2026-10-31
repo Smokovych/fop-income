@@ -89,7 +89,12 @@ const CATEGORIES = {
   expense: "Витрата",
 };
 
+// Ліміт 3 групи = 1167 мінімальних зарплат на 1 січня. ЄСВ — мінімальний внесок на місяць; esv_q — помісячно для
+// кожного кварталу, якщо протягом року змінювався. Військовий збір для платників ЄП — з 2025 року.
 const DEFAULT_TAX = {
+  2022: { min_wage: 6500, income_limit: 7585500, esv_month: 1430, esv_q: [1430, 1430, 1430, 1474], single_tax_rate: 5, mil_rate: 0 },
+  2023: { min_wage: 6700, income_limit: 7818900, esv_month: 1474, single_tax_rate: 5, mil_rate: 0 },
+  2024: { min_wage: 7100, income_limit: 8285700, esv_month: 1760, esv_q: [1562, 1760, 1760, 1760], single_tax_rate: 5, mil_rate: 0 },
   2025: { min_wage: 8000, income_limit: 9336000, esv_month: 1760, single_tax_rate: 5, mil_rate: 1 },
   2026: { min_wage: 8647, income_limit: 10091049, esv_month: 1902.34, single_tax_rate: 5, mil_rate: 1 },
 };
@@ -477,7 +482,7 @@ async function syncMonoAccount(conn, acc) {
   }
   save();
   // догрузка історії назад
-  while (acc.loaded_from > startTs) {
+  while (acc.loaded_from > startTs && !syncTimeUp()) {
     const end = acc.loaded_from - 1;
     const begin = Math.max(startTs, end - MONO_MAX + 1);
     syncProgress.current = acc;
@@ -493,6 +498,9 @@ async function syncMonoAccount(conn, acc) {
 }
 
 const syncProgress = { current: null };
+// Межа часу одного запуску синхронізації (задає фоновий воркер сервера); у браузері — без обмежень
+function syncTimeUp() { return typeof SYNC_DEADLINE !== "undefined" && Date.now() > SYNC_DEADLINE; }
+
 function remainingWindows() {
   const startTs = kyivMidnight(S.settings.sync_start);
   return Object.values(S.accounts).filter((a) => a.bank === "mono" && a.enabled)

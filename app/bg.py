@@ -54,7 +54,8 @@ def kep_secret():
 
 def api_config():
     return {"mono": config.MONO_API, "nbu": config.NBU_API, "privat": config.PRIVAT_API, "tax": config.TAX_API,
-            "cmpTest": config.CMP_TEST_URL or "", "monoInterval": int(config.MONO_MIN_INTERVAL_SEC * 1000)}
+            "cmpTest": config.CMP_TEST_URL or "", "monoInterval": int(config.MONO_MIN_INTERVAL_SEC * 1000),
+            "maxRunMs": int(os.environ.get("SYNC_MAX_RUN_SEC", "2400")) * 1000}
 
 
 def run_node(req, timeout=3000):
