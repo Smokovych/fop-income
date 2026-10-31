@@ -224,7 +224,7 @@ async function syncPrivatAccount(conn, acc) {
     renderBanner();
   }
   acc.synced_to = nowTs();
-  log("info", `${acc.name}: нових операцій ${added}`);
+  log("info", `${acc.name}: нових операцій ${added}` + (acc.p_loaded_from > startIso ? ` (історію завантажено з ${fmtDate(acc.p_loaded_from)}, продовжу наступного разу)` : ` (виписки з ${fmtDate(acc.p_loaded_from)})`));
   save(true);
 }
 

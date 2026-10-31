@@ -549,7 +549,10 @@ async function syncAll(onlyConnId, userInitiated = false) {
   }
   renderBanner();
   try {
-    for (const conn of S.connections) {
+    // ПриватБанк — першим: він швидкий (місяць за кілька секунд), а довге довантаження історії Monobank
+    // (1 запит на хвилину) могло вичерпати час фонового запуску сервера, і до Привату черга не доходила
+    const order = [...S.connections].sort((a, b) => (a.bank === "privat" ? 0 : 1) - (b.bank === "privat" ? 0 : 1));
+    for (const conn of order) {
       if (onlyConnId && conn.id !== onlyConnId) continue;
       try {
         if (conn.bank === "privat") {

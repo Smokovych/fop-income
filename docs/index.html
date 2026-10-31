@@ -3251,7 +3251,7 @@ async function syncPrivatAccount(conn, acc) {
     renderBanner();
   }
   acc.synced_to = nowTs();
-  log("info", `${acc.name}: нових операцій ${added}`);
+  log("info", `${acc.name}: нових операцій ${added}` + (acc.p_loaded_from > startIso ? ` (історію завантажено з ${fmtDate(acc.p_loaded_from)}, продовжу наступного разу)` : ` (виписки з ${fmtDate(acc.p_loaded_from)})`));
   save(true);
 }
 
@@ -4145,7 +4145,10 @@ async function syncAll(onlyConnId, userInitiated = false) {
   }
   renderBanner();
   try {
-    for (const conn of S.connections) {
+    // ПриватБанк — першим: він швидкий (місяць за кілька секунд), а довге довантаження історії Monobank
+    // (1 запит на хвилину) могло вичерпати час фонового запуску сервера, і до Привату черга не доходила
+    const order = [...S.connections].sort((a, b) => (a.bank === "privat" ? 0 : 1) - (b.bank === "privat" ? 0 : 1));
+    for (const conn of order) {
       if (onlyConnId && conn.id !== onlyConnId) continue;
       try {
         if (conn.bank === "privat") {
