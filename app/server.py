@@ -17,7 +17,7 @@ from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote
 
-from . import config, db, tax, store, proxy, bg
+from . import config, db, tax, store, proxy, bg, ai
 from .classify import reclassify_all
 from .sync import worker, add_connection, set_mono_webhook, handle_mono_webhook, refresh_accounts
 
@@ -181,6 +181,20 @@ def api_kep_delete(h, m, body):
 def api_tax_refresh(h, m, body):
     t = _bg(bg.tax_refresh)
     return {"fetched_at": t.get("fetched_at"), "last_error": t.get("last_error")}
+
+
+@route("GET", "/api/ai/status")
+def api_ai_status(h, m, body):
+    return {"enabled": ai.enabled(), "model": ai.MODEL}
+
+
+@route("POST", "/api/ai/ask")
+def api_ai_ask(h, m, body):
+    body = body or {}
+    try:
+        return ai.ask(body.get("question"), body.get("history"))
+    except ai.AiError as e:
+        raise HttpError(e.status, str(e))
 
 
 @route("POST", "/proxy/tax-bridge")

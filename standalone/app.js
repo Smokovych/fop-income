@@ -677,6 +677,138 @@ function bankHistoryLine(bank, name) {
     + ` · операцій: ${n}` + (first ? `, найраніша — ${fmtDate(first)}` : "") + ".";
 }
 
+// ---------------------------------------------------------------- запитання до ШІ (лише на сервері — там ключ і дані)
+const AI = { history: [], busy: false };
+function mdToHtml(md) {
+  const inline = (t) => esc(t).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>").replace(/`([^`]+)`/g, "<code>$1</code>");
+  const lines = String(md).split("\n"), out = [];
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    if (/^\s*\|/.test(l)) {
+      const rows = [];
+      while (i < lines.length && /^\s*\|/.test(lines[i])) rows.push(lines[i++]);
+      i--;
+      const cells = (r) => r.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
+      const body = rows.filter((r) => !/^\s*\|[\s:|-]+\|\s*$/.test(r));
+      out.push("<table>" + body.map((r, k) => "<tr>" + cells(r).map((c) => k === 0 ? `<th>${inline(c)}</th>` : `<td>${inline(c)}</td>`).join("") + "</tr>").join("") + "</table>");
+    } else if (/^\s*([-*•]|\d+\.)\s+/.test(l)) {
+      const ordered = /^\s*\d+\./.test(l), items = [];
+      while (i < lines.length && /^\s*([-*•]|\d+\.)\s+/.test(lines[i])) items.push(lines[i++].replace(/^\s*([-*•]|\d+\.)\s+/, ""));
+      i--;
+      out.push(`<${ordered ? "ol" : "ul"}>${items.map((x) => `<li>${inline(x)}</li>`).join("")}</${ordered ? "ol" : "ul"}>`);
+    } else if (/^#{1,4}\s/.test(l)) out.push(`<p><b>${inline(l.replace(/^#+\s/, ""))}</b></p>`);
+    else if (l.trim()) out.push(`<p>${inline(l)}</p>`);
+  }
+  return out.join("");
+}
+function aiAdd(cls, html) {
+  const d = document.createElement("div");
+  d.className = "ai-msg " + cls; d.innerHTML = html;
+  $("#ai-log").appendChild(d); d.scrollIntoView({ block: "nearest" });
+  return d;
+}
+async function aiAsk(q) {
+  q = String(q || "").trim();
+  if (!q || AI.busy) return;
+  if (!SERVER_MODE) return toast("Запитання до ШІ доступні лише в серверній версії програми", true);
+  AI.busy = true; $("#ai-send").disabled = true; $("#ai-q").value = "";
+  aiAdd("q", esc(q));
+  const wait = aiAdd("a muted", "Аналізую дані…");
+  try {
+    await flushRemote();
+    const res = await api("POST", "/api/ai/ask", JSON.stringify({ question: q, history: AI.history }));
+    if (!res.ok) throw new Error(res.data.error || "HTTP " + res.status);
+    wait.className = "ai-msg a"; wait.innerHTML = mdToHtml(res.data.answer);
+    AI.history.push({ q, a: res.data.answer });
+  } catch (e) {
+    wait.className = "ai-msg a err"; wait.textContent = e.message;
+  } finally { AI.busy = false; $("#ai-send").disabled = false; }
+}
+// Готові запитання, підібрані з аналізу операцій: що в даних помітно змінилось або варто перевірити
+function aiSuggestions() {
+  const inc = Object.values(S.tx).filter((t) => S.accounts[t.account_id] && catOf(t) === "income" && incomeUah(t) != null);
+  const out = [];
+  const today = kyivDate(nowTs()), cy = +today.slice(0, 4), cm = +today.slice(5, 7);
+  const MONTHS_GEN = ["січні", "лютому", "березні", "квітні", "травні", "червні", "липні", "серпні", "вересні", "жовтні", "листопаді", "грудні"];
+  const byYear = {}, ytd = {};
+  for (const t of inc) {
+    const y = +t.date.slice(0, 4), m = +t.date.slice(5, 7);
+    byYear[y] = (byYear[y] || 0) + incomeUah(t);
+    if (m < cm || (m === cm && t.date.slice(8) <= today.slice(8))) ytd[y] = (ytd[y] || 0) + incomeUah(t);
+  }
+  const times = (x) => {
+    const v = Math.round(x * 10) / 10;
+    if (v % 1) return String(v).replace(".", ",") + " раза";
+    const n = v % 100;
+    return v + (n >= 11 && n <= 14 ? " разів" : [2, 3, 4].includes(v % 10) ? " рази" : " разів");
+  };
+  const change = (a, b) => {               // як змінилось b відносно a
+    const r = b / a;
+    if (r >= 1.95) return `виріс у ${times(r)}`;
+    if (r <= 0.51) return `зменшився у ${times(a / b)}`;
+    const pct = Math.round((r - 1) * 100);
+    return pct >= 0 ? `виріс на ${pct}%` : `зменшився на ${-pct}%`;
+  };
+  // рік до року (повні роки), найбільша зміна — першою
+  // неповний перший рік (облік почався пізніше лютого) не порівнюємо — різниця буде лише через неповні дані
+  const firstDate = inc.reduce((m, t) => (t.date < m ? t.date : m), "9999");
+  const years = Object.keys(byYear).map(Number).filter((y) => y < cy && !(y === +firstDate.slice(0, 4) && firstDate.slice(5) > "02-15")).sort();
+  const yoy = [];
+  for (let i = 1; i < years.length; i++) {
+    const a = byYear[years[i - 1]], b = byYear[years[i]];
+    if (a > 0 && b > 0 && Math.abs(Math.log(b / a)) > Math.log(1.25)) yoy.push([Math.abs(Math.log(b / a)), `Чому дохід у ${years[i]} році ${change(a, b)} порівняно з ${years[i - 1]}?`]);
+  }
+  yoy.sort((x, y) => y[0] - x[0]).slice(0, 2).forEach((x) => out.push(x[1]));
+  // поточний рік проти того ж періоду минулого
+  if (ytd[cy] > 0 && ytd[cy - 1] > 0 && Math.abs(Math.log(ytd[cy] / ytd[cy - 1])) > Math.log(1.2))
+    out.push(`Чому дохід за ${cm > 1 ? "січень–" + MONTHS_FULL[cm - 1].toLowerCase() : "січень"} ${cy} року ${change(ytd[cy - 1], ytd[cy])} проти того ж періоду ${cy - 1}?`);
+  // ліміт 3 групи
+  const p = taxParams(cy);
+  if (ytd[cy] && p.income_limit) {
+    const proj = ytd[cy] / 100 / ((Date.parse(today) - Date.UTC(cy, 0, 1)) / 864e5 + 1) * 365;
+    if (proj > p.income_limit * 0.7) out.push(`Чи не перевищу я ліміт доходу 3 групи у ${cy} році?`);
+  }
+  // залежність від одного клієнта за останні 12 місяців
+  const from12 = `${cy - 1}-${today.slice(5)}`, byCp = {};
+  let tot12 = 0;
+  for (const t of inc) if (t.date > from12) { const k = (t.counter_name || "").trim(); if (k) { byCp[k] = (byCp[k] || 0) + incomeUah(t); } tot12 += incomeUah(t); }
+  const top = Object.entries(byCp).sort((a, b) => b[1] - a[1])[0];
+  if (top && tot12 > 0 && top[1] / tot12 >= 0.3) out.push(`Наскільки мій дохід залежить від «${top[0].slice(0, 40)}» (${Math.round(top[1] / tot12 * 100)}% за 12 місяців)?`);
+  // найслабший місяць поточного року
+  const months = Array(12).fill(0);
+  for (const t of inc) if (t.date.startsWith(cy + "-")) months[+t.date.slice(5, 7) - 1] += incomeUah(t);
+  const done = months.slice(0, cm - 1), avg = done.reduce((a, b) => a + b, 0) / (done.length || 1);
+  if (done.length >= 3 && avg > 0) {
+    const mi = done.indexOf(Math.min(...done));
+    if (done[mi] < avg * 0.5) out.push(`Чому в ${MONTHS_GEN[mi]} ${cy} дохід був значно нижчим за середній?`);
+  }
+  // нові клієнти, валютна виручка, сумнівні надходження, податки
+  const firstSeen = {};
+  for (const t of inc) { const k = (t.counter_name || "").trim(); if (k && (!firstSeen[k] || t.date < firstSeen[k])) firstSeen[k] = t.date; }
+  const newC = Object.values(firstSeen).filter((d) => d.startsWith(cy + "-")).length;
+  if (newC >= 2) out.push(`Які ${newC} нових клієнтів з'явилися у ${cy} році і скільки вони принесли?`);
+  if (inc.some((t) => t.currency !== "UAH")) out.push("Скільки валютної виручки я отримав по роках і яка частка її в доході?");
+  const pend = Object.values(S.tx).filter((t) => S.accounts[t.account_id] && needsReview(t)).length;
+  if (pend) out.push(`Які надходження, що не враховані як дохід, насправді можуть бути доходом?`);
+  out.push(`Скільки податків сплатити за ${Math.ceil(cm / 3)} квартал ${cy} року?`);
+  if (out.length < 4) out.push("Хто мої найбільші клієнти за весь час?", "Порівняй дохід по місяцях за останні два роки");
+  return [...new Set(out)].slice(0, 6);
+}
+function renderAiSuggestions() {
+  $("#ai-examples").innerHTML = aiSuggestions().map((q) => `<button type="button" class="chip">${esc(q)}</button>`).join("");
+}
+
+$("#btn-ai").addEventListener("click", () => {
+  renderAiSuggestions();
+  const p = $("#ai-panel");
+  p.classList.toggle("hidden");
+  if (!p.classList.contains("hidden")) $("#ai-q").focus();
+});
+$("#ai-form").addEventListener("submit", (e) => { e.preventDefault(); aiAsk($("#ai-q").value); });
+$("#ai-q").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); aiAsk($("#ai-q").value); } });
+$("#ai-examples").addEventListener("click", (e) => { if (e.target.classList.contains("chip")) aiAsk(e.target.textContent); });
+$("#ai-clear").addEventListener("click", () => { AI.history = []; $("#ai-log").innerHTML = ""; renderAiSuggestions(); $("#ai-q").focus(); });
+
 $("#btn-history").addEventListener("click", () => {
   const p = $("#history-panel");
   p.classList.toggle("hidden");

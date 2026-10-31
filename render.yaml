@@ -13,6 +13,8 @@ services:
         sync: false            # Render попросить ввести пароль при створенні
       - key: SECRET_KEY
         generateValue: true
+      - key: ANTHROPIC_API_KEY
+        sync: false            # ключ Claude API для «Запитати ШІ» (console.anthropic.com); без нього кнопка підкаже, що ШІ не налаштовано
       - key: DATA_DIR
         value: /data
     disk:

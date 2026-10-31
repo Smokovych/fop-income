@@ -6,7 +6,19 @@
   <meta name="fop-mode" content="local">
   <title>ФОП-дохід</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232a78d6'/%3E%3Ctext x='16' y='22' font-size='17' text-anchor='middle' fill='white' font-family='sans-serif' font-weight='700'%3E₴%3C/text%3E%3C/svg%3E">
-  <style>/*CSS*/</style>
+  <style>/*CSS*/  .ai-log { display: flex; flex-direction: column; gap: 10px; max-height: 60vh; overflow: auto; margin: 8px 0; }
+  .ai-log:empty { display: none; }
+  .ai-msg { padding: 10px 12px; border-radius: 10px; line-height: 1.45; overflow-x: auto; }
+  .ai-msg.q { align-self: flex-end; background: rgba(42,120,214,.14); max-width: 85%; white-space: pre-wrap; }
+  .ai-msg.a { background: var(--bg-soft, rgba(127,127,127,.08)); }
+  .ai-msg.a table { border-collapse: collapse; margin: 6px 0; font-size: .92em; }
+  .ai-msg.a th, .ai-msg.a td { border: 1px solid rgba(127,127,127,.3); padding: 3px 8px; text-align: left; }
+  .ai-msg.a p { margin: .4em 0; } .ai-msg.a ul, .ai-msg.a ol { margin: .3em 0; padding-left: 1.3em; }
+  .ai-msg.err { color: var(--danger, #c0392b); }
+  .ai-examples { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 10px; }
+  .chip { border: 1px solid rgba(127,127,127,.35); background: transparent; color: inherit; border-radius: 999px; padding: 4px 10px; font: inherit; font-size: .85em; cursor: pointer; }
+  .ai-form textarea { width: 100%; box-sizing: border-box; font: inherit; padding: 8px; border-radius: 8px; border: 1px solid rgba(127,127,127,.4); background: transparent; color: inherit; resize: vertical; margin-bottom: 8px; }
+</style>
 </head>
 <body>
   <div id="login" class="login hidden">
@@ -81,11 +93,24 @@
         <div class="section-head">
           <h2>Операції</h2>
           <div class="conn-actions">
+            <button class="btn" type="button" id="btn-ai">Запитати ШІ</button>
             <button class="btn" type="button" id="btn-history">Попередні роки</button>
             <button class="btn" type="button" id="btn-stmt-file" title="Виписка ПриватБанку з Приват24 для бізнесу (Excel), можна кілька файлів одразу">Завантажити виписку</button>
             <input type="file" id="stmt-file" accept=".xlsx,.xls,.csv" multiple hidden>
             <a class="btn" id="btn-export" href="#" role="button">Книга обліку доходів (CSV)</a>
           </div>
+        </div>
+        <div class="card ai-panel hidden" id="ai-panel">
+          <div class="card-head"><h3>Запитання до ШІ</h3><span class="muted small">Відповідь — на основі ваших операцій і податкових даних</span></div>
+          <div class="ai-examples" id="ai-examples"></div>
+          <div class="ai-log" id="ai-log"></div>
+          <form class="ai-form" id="ai-form">
+            <textarea id="ai-q" rows="2" placeholder="Напр.: який середній дохід на місяць у 2025 році?" aria-label="Запитання"></textarea>
+            <div class="conn-actions">
+              <button class="btn primary" type="submit" id="ai-send">Запитати</button>
+              <button class="btn" type="button" id="ai-clear">Нова розмова</button>
+            </div>
+          </form>
         </div>
         <div class="card history-panel hidden" id="history-panel">
           <div class="inline-form">

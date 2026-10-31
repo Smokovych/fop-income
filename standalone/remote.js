@@ -111,12 +111,13 @@ async function remoteBoot() {
   const me = await api("GET", "/api/me", undefined, { noLogin: true });
   if (!me.data.auth_required && !me.data.authenticated) throw new Error("На сервері не задано пароль. Додайте змінну APP_PASSWORD у налаштуваннях сервера (Railway → Variables) і оновіть сторінку.");
   if (me.data.auth_required && !me.data.authenticated) await showLogin();
-  $("#app").classList.remove("hidden");
+  $("#app").classList.add("hidden"); // показуємо програму лише після завантаження даних (інакше клік по вкладці — до появи S)
   const res = await api("GET", "/api/state");
   if (!res.ok) throw new Error(res.data.error || "Не вдалося завантажити дані з сервера");
   R.version = res.data.version;
   R.base = res.data.state ? JSON.parse(JSON.stringify(res.data.state)) : null;
   load(res.data.state);
+  $("#app").classList.remove("hidden");
   if (!R.base || !sameJSON(R.base, S)) save();
   setInterval(pollRemote, 20000);
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") pollRemote(); });
