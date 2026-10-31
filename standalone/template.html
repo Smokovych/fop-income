@@ -112,22 +112,21 @@
         <div id="tax-error" class="warn" hidden></div>
 
         <div id="tax-setup" class="tax-setup">
-          <p class="muted">Дані беруться з Електронного кабінету платника через його офіційний API. Кабінет пускає лише з кваліфікованим електронним підписом (КЕП), тому потрібні два кроки — один раз.</p>
+          <p class="muted">Дані беруться з Електронного кабінету платника через його офіційний API. Кабінет пускає лише з кваліфікованим електронним підписом (КЕП): відкрийте свій ключ і один раз налаштуйте міст.</p>
           <div class="grid-2">
-            <div class="card">
-              <h3>Крок 1. Підпис</h3>
-              <p class="muted small">Кабінет приймає ваш РНОКПП, підписаний вашим КЕП. Підписуєте ви самі на офіційному сайті ЦЗО — пароль від ключа програма не бачить.</p>
-              <ol class="steps">
-                <li>Вкажіть РНОКПП і завантажте файл для підпису:
-                  <div class="inline-form"><input id="tax-tin" inputmode="numeric" maxlength="10" placeholder="1234567890" autocomplete="off">
-                  <button class="btn" type="button" id="btn-tax-txt">Завантажити файл</button></div></li>
-                <li>Відкрийте <a href="https://czo.gov.ua/sign" target="_blank" rel="noopener">czo.gov.ua/sign</a> → «Файловий» → оберіть файл ключа, введіть пароль і зчитайте ключ.</li>
-                <li>Підпишіть завантажений файл <b>rnokpp-….txt</b>. Якщо сайт пропонує тип підпису — оберіть <b>«дані та підпис в одному файлі»</b> (CAdES, .p7s). Збережіть підписаний файл.</li>
-                <li>Завантажте підписаний файл сюди:
-                  <label class="btn" style="margin-top:6px">Обрати файл .p7s<input type="file" id="tax-sign-file" accept=".p7s,.p7m,.sig,.txt,.pem,application/pkcs7-signature" hidden></label></li>
-              </ol>
-              <p class="small" id="tax-sign-status"></p>
-            </div>
+            <form class="card" id="form-tax-key" autocomplete="off">
+              <h3>Крок 1. Ваш ключ (КЕП)</h3>
+              <p class="muted small">Той самий файловий ключ, яким ви входите в Кабінет (напр. .pfx від monobank). Програма відкриває його тут, у браузері, і підписує лише ваш РНОКПП для входу.</p>
+              <label class="field">Файл ключа<span class="muted small"> — .pfx, .jks, Key-6.dat; якщо сертифікат окремо, оберіть і його (.cer)</span>
+                <input type="file" id="tax-key-files" multiple accept=".pfx,.p12,.jks,.dat,.zs2,.sk,.pk8,.key,.cer,.crt,.pem"></label>
+              <label class="field">Пароль ключа
+                <input type="password" id="tax-key-password" autocomplete="off" spellcheck="false"></label>
+              <label class="field">РНОКПП<span class="muted small"> — береться із сертифіката; вкажіть, якщо його там немає</span>
+                <input id="tax-tin" inputmode="numeric" maxlength="10" placeholder="1234567890" autocomplete="off"></label>
+              <div class="conn-actions"><button class="btn primary" type="submit">Відкрити ключ</button><button class="btn" type="button" id="btn-tax-close-key">Закрити ключ</button></div>
+              <p id="tax-key-status" class="small muted"></p>
+              <p class="muted small">🔒 Ключ і пароль залишаються лише в пам'яті цієї вкладки: програма їх не зберігає й нікуди не надсилає. До Кабінету йде тільки підписаний РНОКПП. Після перезавантаження сторінки ключ треба відкрити знову.</p>
+            </form>
             <form class="card" id="form-tax-bridge">
               <h3>Крок 2. Міст до Кабінету</h3>
               <p class="muted small">Кабінет не відповідає програмам у браузері, тому запити йдуть через невеликий скрипт у вашому Google-акаунті. Він нічого не зберігає і вміє лише читати облікові дані. Це окремий міст — не той, що для ПриватБанку.</p>
@@ -143,8 +142,7 @@
               <p class="small" id="tax-bridge-status"></p>
             </form>
           </div>
-          <p class="muted small">Підпис зберігається лише в цьому браузері та в резервній копії. Він дає доступ лише до перегляду ваших даних у Кабінеті — зберігайте копію в надійному місці.
-            <button class="btn ghost danger small" type="button" id="btn-tax-forget">Видалити підпис і дані</button></p>
+          <p class="muted small"><button class="btn ghost danger small" type="button" id="btn-tax-forget">Видалити облікові дані й налаштування мосту</button></p>
         </div>
 
         <div id="tax-summary"></div>

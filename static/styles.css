@@ -309,3 +309,8 @@ ul.plain { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
   .kv-table td:empty { display: none; }
   .kv-table td::before { content: attr(data-label) ": "; color: var(--muted); }
 }
+
+label.field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--text-2); }
+label.field input { width: 100%; }
+.small.ok { color: var(--good); }
+p.small.warn { padding: 8px 12px; }

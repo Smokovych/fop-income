@@ -5,7 +5,7 @@ root = os.path.dirname(here)
 html = open(os.path.join(here, "template.html"), encoding="utf-8").read()
 css = open(os.path.join(root, "static", "styles.css"), encoding="utf-8").read()
 # порядок важливий: remote.js використовує randomKey() з privat.js, app.js — SERVER_MODE з remote.js
-js = "\n".join(open(os.path.join(here, n), encoding="utf-8").read() for n in ("commission.js", "privat.js", "remote.js", "tax.js", "app.js"))
+js = "\n".join(open(os.path.join(here, n), encoding="utf-8").read() for n in ("vendor/kep.bundle.js", "commission.js", "privat.js", "remote.js", "tax.js", "app.js"))
 html = html.replace("/*CSS*/", css).replace("<script>/*JS*/</script>", "<script>\n" + js.replace("</script", "<\\/script") + "\n</script>")
 os.makedirs(os.path.join(root, "dist"), exist_ok=True)
 out = os.path.join(root, "dist", "ФОП-дохід.html")

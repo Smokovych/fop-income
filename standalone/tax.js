@@ -3,10 +3,11 @@
 //   GET https://cabinet.tax.gov.ua/ws/public_api/payer_card            — усі блоки облікових даних
 //   GET https://cabinet.tax.gov.ua/ws/public_api/payer_card/{група}?page=0&size=… — блок зі списком
 //   Authorization: РНОКПП, підписаний КЕП внутрішнім підписом з сертифікатом, у BASE64.
+// Підпис робиться тут же, у браузері: користувач відкриває свій файловий ключ (.pfx, .jks, Key-6.dat)
+// паролем, бібліотека FopKep (standalone/vendor) підписує РНОКПП за ДСТУ 4145. Ключ і пароль живуть
+// лише в пам'яті вкладки — не зберігаються і нікуди не надсилаються; надсилається тільки готовий підпис.
 // Кабінет не відповідає сторінкам у браузері (немає CORS), тому запити йдуть через «міст» —
-// скрипт Google Apps Script користувача. Підпис (.p7s) користувач робить сам на czo.gov.ua і
-// завантажує в програму: пароль від ключа програма не бачить. Міст секретів не зберігає —
-// підпис передається в кожному запиті.
+// скрипт Google Apps Script користувача. Міст нічого не зберігає — підпис передається в кожному запиті.
 
 const TAX_ALLOWED_HINT = "payer_card, payer_card/{група}";
 
@@ -48,39 +49,44 @@ function out_(obj) {
 `;
 }
 
-// ---------------------------------------------------------------- підпис
-// Приймає .p7s (двійковий DER), base64 або PEM. Повертає { auth, tin } або кидає помилку.
-async function readSignatureFile(file) {
-  const buf = new Uint8Array(await file.arrayBuffer());
-  if (!buf.length) throw new Error("Файл порожній");
-  let b64;
-  if (buf[0] === 0x30) {
-    let s = "";
-    for (let i = 0; i < buf.length; i += 0x8000) s += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
-    b64 = btoa(s);
-  } else {
-    const text = new TextDecoder().decode(buf).replace(/-----[^-]+-----/g, "").replace(/\s+/g, "");
-    if (!/^[A-Za-z0-9+/]+=*$/.test(text) || text.length < 200) throw new Error("Це не схоже на файл підпису. Потрібен файл .p7s, отриманий на czo.gov.ua («дані та підпис в одному файлі»).");
-    b64 = text;
+// ---------------------------------------------------------------- ключ (лише в пам'яті)
+let kepKey = null;      // відкритий ключ: { info, sign(text) }
+let kepAuth = null;     // готовий підпис РНОКПП на цю сесію: { tin, b64 }
+
+async function openKepFiles(files, password) {
+  if (typeof FopKep === "undefined") throw new Error("Бібліотека підпису не завантажилась. Оновіть сторінку.");
+  if (!files.length) throw new Error("Оберіть файл ключа (.pfx, .jks або Key-6.dat)");
+  const bufs = await Promise.all([...files].map(async (f) => new Uint8Array(await f.arrayBuffer())));
+  await new Promise((r) => setTimeout(r, 30)); // дати інтерфейсу показати «Відкриваю…»
+  return FopKep.openKey(bufs, password);
+}
+
+function kepTin() {
+  return (kepKey && kepKey.info.cert && kepKey.info.cert.tin) || $("#tax-tin").value.trim() || S.settings.owner_tax_id || "";
+}
+
+async function getAuth() {
+  if (!kepKey) {
+    const err = new Error("Відкрийте ключ (крок 1) — ключ не зберігається, тому після перезавантаження сторінки його треба відкрити знову.");
+    err.code = "NOKEY";
+    throw err;
   }
-  const der = atob(b64);
-  if (der.charCodeAt(0) !== 0x30) throw new Error("Файл підпису пошкоджений");
-  // РНОКПП — і в підписаних даних, і в сертифікаті (TINUA-…)
-  const m = der.match(/TINUA-(\d{10})/) || der.match(/(?:^|[^\d])(\d{10})(?!\d)/);
-  return { auth: b64, tin: m ? m[1] : null, size: der.length };
+  const tin = kepTin();
+  if (!/^\d{8,10}$/.test(tin)) throw new Error("Вкажіть РНОКПП — 10 цифр (у сертифікаті ключа його не знайдено)");
+  if (!kepAuth || kepAuth.tin !== tin) kepAuth = { tin, b64: await kepKey.sign(tin) };
+  return kepAuth.b64;
 }
 
 // ---------------------------------------------------------------- запити через міст
-async function taxCall(path, params) {
+async function taxCall(path, params, auth) {
   const t = S.tax || {};
-  if (!t.bridge_url) throw new Error("Спершу підключіть міст до Кабінету");
-  if (!t.auth) throw new Error("Спершу завантажте підписаний файл");
+  if (!t.bridge_url) throw new Error("Спершу підключіть міст до Кабінету (крок 2)");
   let r;
   try {
     r = await fetch(t.bridge_url, {
       method: "POST", redirect: "follow",
       headers: { "Content-Type": "text/plain;charset=utf-8" }, // без попереднього запиту CORS
-      body: JSON.stringify({ key: t.bridge_key, path, params: params || {}, auth: t.auth }),
+      body: JSON.stringify({ key: t.bridge_key, path, params: params || {}, auth }),
     });
   } catch {
     const err = new Error("Програма не може прочитати відповідь мосту до Кабінету. Перевірте розгортання в Google: доступ «Усі», адреса /exec, нова версія коду.");
@@ -97,7 +103,8 @@ async function taxCall(path, params) {
   try { body = w.body ? JSON.parse(w.body) : null; } catch {}
   if (w.http === 401 || w.http === 403) {
     const msg = (body && (body.message || body.error_description || body.error)) || (w.body || "").slice(0, 200);
-    throw new Error(`Кабінет не прийняв підпис (HTTP ${w.http})${msg ? ": " + msg : ""}. Можливо, підпис застарів або підписано не той текст — підпишіть файл з РНОКПП ще раз.`);
+    kepAuth = null; // наступна спроба — з новим підписом
+    throw new Error(`Кабінет не прийняв підпис (HTTP ${w.http})${msg ? ": " + msg : ""}. Перевірте, що ключ чинний і належить цьому РНОКПП; спробуйте ще раз.`);
   }
   if (w.http >= 400 || !body) throw new Error(`Кабінет відповів помилкою HTTP ${w.http}: ${(w.body || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").slice(0, 200)}`);
   return body;
@@ -114,8 +121,8 @@ async function taxBridgePing(url, key) {
 }
 
 // Завантажує всі облікові дані; блоки-списки без даних догружає окремо
-async function fetchPayerCard() {
-  const groups = await taxCall("payer_card");
+async function fetchPayerCard(auth) {
+  const groups = await taxCall("payer_card", null, auth);
   if (!Array.isArray(groups)) throw new Error("Кабінет повернув дані в незнайомому форматі");
   for (const g of groups) {
     if (g.type === 1 || (Array.isArray(g.listValues) && g.listValues.length)) continue;
@@ -123,7 +130,7 @@ async function fetchPayerCard() {
     try {
       const rows = [];
       for (let page = 0; page < 20; page++) {
-        const d = await taxCall(`payer_card/${g.idGroup}`, { page, size: 100 });
+        const d = await taxCall(`payer_card/${g.idGroup}`, { page, size: 100 }, auth);
         const vals = Array.isArray(d.values) ? d.values : Array.isArray(d.content) ? d.content : [];
         rows.push(...vals);
         if (vals.length < 100) break;
@@ -218,16 +225,14 @@ function loadAccount() {
   const hasCard = taxGroups().length > 0;
   // крок 1-2: підпис і міст
   // кроки підключення згортаються, коли все працює; при помилці (напр. підпис застарів) — розгортаються
-  $("#tax-setup").classList.toggle("collapsed", !!(hasCard && t.auth && t.bridge_url && !t.last_error));
+  $("#tax-setup").classList.toggle("collapsed", !!(hasCard && kepKey && t.bridge_url && !t.last_error));
   $("#tax-tin").value = $("#tax-tin").value || S.settings.owner_tax_id || "";
-  $("#tax-sign-status").innerHTML = t.auth
-    ? `✓ Підпис завантажено${t.auth_name ? ` (${esc(t.auth_name)})` : ""}${t.auth_tin ? `, РНОКПП ${esc(t.auth_tin)}` : ""}, ${new Date(t.auth_added_at * 1000).toLocaleDateString("uk-UA")}`
-    : "Підпис ще не завантажено";
+  renderKeyStatus();
   $("#tax-bridge-status").innerHTML = t.bridge_url ? `✓ Міст підключено` : "Міст ще не підключено";
   if (!t.pending_key) { t.pending_key = randomKey(); S.tax = t; save(); }
   $("#tax-bridge-code").value = taxBridgeCode(t.bridge_key || t.pending_key);
   $("#tax-bridge-url").value = t.bridge_url || "";
-  $("#btn-tax-load").disabled = !(t.auth && t.bridge_url);
+  $("#btn-tax-load").disabled = false;
   $("#tax-meta").textContent = t.fetched_at ? `Оновлено з Кабінету ${new Date(t.fetched_at * 1000).toLocaleString("uk-UA")}` : "";
   $("#tax-error").hidden = !t.last_error;
   $("#tax-error").textContent = t.last_error || "";
@@ -245,11 +250,29 @@ function loadAccount() {
   $("#tax-groups").innerHTML = taxGroups().map(renderGroup).join("");
 }
 
+function renderKeyStatus() {
+  const box = $("#tax-key-status");
+  if (!kepKey) { box.className = "small muted"; box.textContent = "Ключ не відкрито. Він не зберігається: після перезавантаження сторінки відкрийте його знову."; return; }
+  const c = kepKey.info.cert;
+  if (!c) { box.className = "small warn"; box.textContent = "Ключ відкрито, але в ньому немає сертифіката. Додайте файл сертифіката (.cer) разом із ключем."; return; }
+  const expired = c.validTo && Date.parse(c.validTo) < Date.now();
+  box.className = "small " + (expired ? "warn" : "ok");
+  box.innerHTML = `${expired ? "⚠ Сертифікат протермінований" : "✓ Ключ відкрито"}: <b>${esc(c.name || c.org || "—")}</b>`
+    + (c.tin ? `, РНОКПП ${esc(c.tin)}` : "") + (c.issuer ? `<br><span class="muted">${esc(c.issuer)}</span>` : "")
+    + (c.validTo ? `<span class="muted"> · діє до ${new Date(c.validTo).toLocaleDateString("uk-UA")}</span>` : "");
+}
+
 async function refreshPayerCard() {
   const btn = $("#btn-tax-load");
-  btn.disabled = true; btn.textContent = "Завантажую з Кабінету…";
+  if (!S.tax.bridge_url || !kepKey) {
+    $("#tax-setup").classList.remove("collapsed");
+    const target = !kepKey ? "#tax-key-files" : "#tax-bridge-url";
+    $(target).scrollIntoView({ behavior: "smooth", block: "center" });
+    return toast(!kepKey ? "Спершу відкрийте ключ (крок 1)" : "Спершу підключіть міст (крок 2)", true);
+  }
+  btn.disabled = true; btn.textContent = "Підписую й завантажую…";
   try {
-    const card = await fetchPayerCard();
+    const card = await fetchPayerCard(await getAuth());
     S.tax.card = card;
     S.tax.fetched_at = nowTs();
     S.tax.last_error = null;
@@ -272,25 +295,28 @@ async function refreshPayerCard() {
 
 function initTaxTab() {
   if (!S.tax) S.tax = {};
-  $("#btn-tax-txt").addEventListener("click", () => {
-    const tin = $("#tax-tin").value.trim();
-    if (!/^\d{10}$/.test(tin)) return toast("Вкажіть РНОКПП — 10 цифр", true);
-    download(`rnokpp-${tin}.txt`, tin, "text/plain");
-  });
-  $("#tax-sign-file").addEventListener("change", async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
+  // старий спосіб (завантажений .p7s) більше не використовується — не тримаємо підпис у сховищі
+  if (S.tax.auth) { for (const k of ["auth", "auth_name", "auth_tin", "auth_added_at"]) delete S.tax[k]; save(); }
+  $("#form-tax-key").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const btn = $("button[type=submit]", e.target), pw = $("#tax-key-password");
+    btn.disabled = true; btn.textContent = "Відкриваю ключ…";
     try {
-      const sig = await readSignatureFile(file);
-      const expected = $("#tax-tin").value.trim() || S.settings.owner_tax_id;
-      Object.assign(S.tax, { auth: sig.auth, auth_name: file.name, auth_tin: sig.tin, auth_added_at: nowTs(), last_error: null });
-      save(true);
-      toast(sig.tin && expected && sig.tin !== expected ? `Увага: у підписі РНОКПП ${sig.tin}, а вказано ${expected}` : "Підпис завантажено");
-      loadAccount();
-      if (S.tax.bridge_url) refreshPayerCard();
-    } catch (err) { toast(err.message, true); }
-    e.target.value = "";
+      kepKey = await openKepFiles($("#tax-key-files").files, pw.value);
+      kepAuth = null;
+      pw.value = "";
+      const c = kepKey.info.cert;
+      if (c && c.tin) $("#tax-tin").value = c.tin;
+      renderKeyStatus();
+      if (!c) toast("Ключ відкрито, але сертифіката немає — додайте файл .cer", true);
+      else {
+        toast("Ключ відкрито");
+        if (S.tax.bridge_url) refreshPayerCard();
+      }
+    } catch (err) { kepKey = null; renderKeyStatus(); toast(err.message, true); }
+    btn.disabled = false; btn.textContent = "Відкрити ключ";
   });
+  $("#btn-tax-close-key").addEventListener("click", () => { kepKey = null; kepAuth = null; $("#tax-key-files").value = ""; renderKeyStatus(); toast("Ключ закрито"); });
   $("#btn-tax-copy").addEventListener("click", async () => {
     const box = $("#tax-bridge-code");
     try { await navigator.clipboard.writeText(box.value); toast("Код скопійовано"); }
@@ -309,14 +335,15 @@ function initTaxTab() {
       save(true);
       toast("Міст до Кабінету підключено");
       loadAccount();
-      if (S.tax.auth) refreshPayerCard();
+      if (kepKey) refreshPayerCard();
     } catch (err) { S.tax.last_error = err.message; save(); loadAccount(); toast(err.message, true); }
     btn.disabled = false; btn.textContent = "Підключити міст";
   });
   $("#btn-tax-load").addEventListener("click", refreshPayerCard);
   $("#btn-tax-setup").addEventListener("click", () => $("#tax-setup").classList.toggle("collapsed"));
   $("#btn-tax-forget").addEventListener("click", () => {
-    if (!confirm("Видалити з програми підпис і облікові дані? Міст у Google залишиться — його можна видалити на script.google.com.")) return;
-    S.tax = { pending_key: randomKey() }; save(true); loadAccount(); toast("Підпис і облікові дані видалено");
+    if (!confirm("Видалити з програми облікові дані й налаштування мосту? Міст у Google залишиться — його можна видалити на script.google.com.")) return;
+    kepKey = null; kepAuth = null;
+    S.tax = { pending_key: randomKey() }; save(true); loadAccount(); toast("Облікові дані видалено");
   });
 }
