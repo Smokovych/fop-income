@@ -373,10 +373,14 @@ let resizeTimer;
 addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { if (activeTab === "overview") loadOverview(); }, 200); });
 
 // ============================================================ операції
+// Джерело операції: підключення банку («conn:ID») або імпорт з файлів («file»)
+const sourceOf = (acc) => (acc.bank === "file" || acc.connection_id == null ? "file" : "conn:" + acc.connection_id);
+
 function filteredTx() {
-  const f = { from: $("#f-from").value, to: $("#f-to").value, acc: $("#f-account").value, cat: $("#f-category").value, dir: $("#f-direction").value, q: norm($("#f-q").value) };
+  const f = { from: $("#f-from").value, to: $("#f-to").value, acc: $("#f-account").value, src: $("#f-source").value, cat: $("#f-category").value, dir: $("#f-direction").value, q: norm($("#f-q").value) };
   return Object.values(S.tx).filter((t) => S.accounts[t.account_id]
     && (!f.from || t.date >= f.from) && (!f.to || t.date <= f.to) && (!f.acc || t.account_id === f.acc)
+    && (!f.src || sourceOf(S.accounts[t.account_id]) === f.src)
     && (!f.cat || (f.cat === "__review" ? needsReview(t) : catOf(t) === f.cat)) && (f.dir !== "in" || t.amount > 0) && (f.dir !== "out" || t.amount < 0)
     && (!f.q || norm([t.description, t.counter_name, t.comment, t.note].join(" ")).includes(f.q)))
     .map((t) => [needsReview(t), t])
@@ -387,8 +391,12 @@ function filteredTx() {
 function loadTransactions(reset) {
   if (reset) state.txShown = Math.max(100, reset === "keep" ? state.txShown : 100);
   const cur = $("#f-account").value;
-  $("#f-account").innerHTML = `<option value="">Усі</option>` + Object.values(S.accounts)
+  renderSourceFilter();
+  const src = $("#f-source").value;
+  const accs = Object.values(S.accounts).filter((a) => !src || sourceOf(a) === src);
+  $("#f-account").innerHTML = `<option value="">Усі</option>` + accs
     .map((a) => `<option value="${esc(a.id)}" ${a.id === cur ? "selected" : ""}>${esc(a.name)}</option>`).join("");
+  renderPeriodYears();
   const all = filteredTx();
   const inc = all.filter((t) => catOf(t) === "income");
   const income = inc.reduce((a, t) => a + (incomeUah(t) || 0), 0);
@@ -491,13 +499,62 @@ $("#filters-toggle").addEventListener("click", () => {
   $("#filters-toggle").setAttribute("aria-expanded", open);
   updateFiltersToggle();
 });
+function renderSourceFilter() {
+  const cur = $("#f-source").value;
+  const opts = S.connections.map((c) => [`conn:${c.id}`, c.name]);
+  if (Object.values(S.accounts).some((a) => sourceOf(a) === "file")) opts.push(["file", "Імпорт з файлів"]);
+  $("#f-source").innerHTML = `<option value="">Усі</option>` + opts.map(([v, n]) => `<option value="${esc(v)}" ${v === cur ? "selected" : ""}>${esc(n)}</option>`).join("");
+}
+
+// ---------------------------------------------------------------- період: рік / квартал / місяць
+const MONTHS_FULL = ["Січень", "Лютий", "Березень", "Квітень", "Травень", "Червень", "Липень", "Серпень", "Вересень", "Жовтень", "Листопад", "Грудень"];
+function renderPeriodYears() {
+  const sel = $("#f-period-year"), cur = sel.value;
+  const years = [...new Set([new Date().getFullYear(), ...Object.values(S.tx).map((t) => +t.date.slice(0, 4))])].sort((a, b) => b - a);
+  sel.innerHTML = years.map((y) => `<option ${String(y) === cur ? "selected" : ""}>${y}</option>`).join("");
+}
+function applyPeriod() {
+  const kind = $("#f-period").value, wrapSub = $("#f-period-sub-wrap"), wrapY = $("#f-period-year-wrap");
+  wrapY.classList.toggle("hidden", !kind);
+  wrapSub.classList.toggle("hidden", kind !== "quarter" && kind !== "month");
+  if (!kind) return;
+  const y = +$("#f-period-year").value || new Date().getFullYear();
+  const pad = (n) => String(n).padStart(2, "0");
+  const lastDay = (m) => new Date(Date.UTC(y, m, 0)).getUTCDate(); // m — 1..12
+  let from = `${y}-01-01`, to = `${y}-12-31`;
+  if (kind === "quarter" || kind === "month") {
+    const sub = $("#f-period-sub");
+    const want = kind === "quarter" ? "q" : "m";
+    if (sub.dataset.kind !== want) {
+      const now = new Date(), curM = now.getMonth() + 1;
+      sub.innerHTML = kind === "quarter"
+        ? [1, 2, 3, 4].map((q) => `<option value="${q}" ${q === Math.ceil(curM / 3) ? "selected" : ""}>${q} квартал</option>`).join("")
+        : MONTHS_FULL.map((n, i) => `<option value="${i + 1}" ${i + 1 === curM ? "selected" : ""}>${n}</option>`).join("");
+      sub.dataset.kind = want;
+      $("#f-period-sub-label").textContent = kind === "quarter" ? "Квартал" : "Місяць";
+    }
+    const v = +sub.value;
+    if (kind === "quarter") { from = `${y}-${pad(v * 3 - 2)}-01`; to = `${y}-${pad(v * 3)}-${lastDay(v * 3)}`; }
+    else { from = `${y}-${pad(v)}-01`; to = `${y}-${pad(v)}-${lastDay(v)}`; }
+  }
+  $("#f-from").value = from; $("#f-to").value = to;
+}
+["#f-period", "#f-period-sub", "#f-period-year"].forEach((id) => $(id).addEventListener("change", () => {
+  applyPeriod(); updateFiltersToggle(); loadTransactions(true);
+}));
+// ручна зміна дат — довільний період
+["#f-from", "#f-to"].forEach((id) => $(id).addEventListener("input", () => {
+  if ($("#f-period").value) { $("#f-period").value = ""; applyPeriod(); }
+}));
+$("#f-source").addEventListener("change", () => { $("#f-account").value = ""; });
+
 function updateFiltersToggle() {
-  const n = ["#f-from", "#f-to", "#f-account", "#f-category", "#f-direction"].filter((id) => $(id).value).length;
+  const n = ["#f-from", "#f-to", "#f-source", "#f-account", "#f-category", "#f-direction"].filter((id) => $(id).value).length;
   const open = $("#tx-filters").classList.contains("open");
   $("#filters-toggle").textContent = open ? "Сховати фільтри" : n ? `Фільтри · ${n}` : "Фільтри";
 }
-["#f-from", "#f-to", "#f-account", "#f-category", "#f-direction"].forEach((id) => $(id).addEventListener("change", updateFiltersToggle));
-["#f-from", "#f-to", "#f-account", "#f-category", "#f-direction", "#f-q"].forEach((id) =>
+["#f-from", "#f-to", "#f-source", "#f-account", "#f-category", "#f-direction"].forEach((id) => $(id).addEventListener("change", updateFiltersToggle));
+["#f-from", "#f-to", "#f-source", "#f-account", "#f-category", "#f-direction", "#f-q"].forEach((id) =>
   $(id).addEventListener("input", () => { clearTimeout(filterTimer); filterTimer = setTimeout(() => loadTransactions(true), 200); }));
 // ---------------------------------------------------------------- попередні роки
 function loadedFromIso() {

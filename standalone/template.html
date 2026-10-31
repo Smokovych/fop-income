@@ -95,8 +95,14 @@
         </div>
         <div class="filters card" id="tx-filters">
           <button type="button" class="btn filters-toggle" id="filters-toggle" aria-expanded="false" aria-controls="tx-filters">Фільтри</button>
+          <label>Період
+            <select id="f-period"><option value="">Довільний</option><option value="year">Рік</option><option value="quarter">Квартал</option><option value="month">Місяць</option></select>
+          </label>
+          <label class="hidden" id="f-period-sub-wrap"><span id="f-period-sub-label">Квартал</span> <select id="f-period-sub"></select></label>
+          <label class="hidden" id="f-period-year-wrap">Рік <select id="f-period-year"></select></label>
           <label>З <input type="date" id="f-from"></label>
           <label>По <input type="date" id="f-to"></label>
+          <label>Джерело <select id="f-source"><option value="">Усі</option></select></label>
           <label>Рахунок <select id="f-account"><option value="">Усі</option></select></label>
           <label>Категорія <select id="f-category"><option value="">Усі</option></select></label>
           <label>Напрям
