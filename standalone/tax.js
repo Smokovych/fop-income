@@ -278,7 +278,8 @@ function renderGroup(g) {
     const rows = Object.entries(g.values).filter(([, v]) => v != null && v !== "");
     body += rows.length ? `<dl class="kv">${rows.map(([k, v]) => `<dt>${esc(headers[k] || k)}</dt><dd>${esc(fmtTaxValue(v))}</dd>`).join("")}</dl>` : "";
   }
-  const list = groupRows(g);
+  // записи, в яких немає жодного заповненого поля, не рахуємо
+  const list = groupRows(g).filter((r) => r && Object.values(r).some((v) => v != null && v !== ""));
   if (list.length) {
     const cols = [...new Set([...Object.keys(headers).filter((k) => list.some((r) => r[k] != null && r[k] !== "")), ...list.flatMap((r) => Object.keys(r))])]
       .filter((k) => list.some((r) => r[k] != null && r[k] !== ""));
@@ -286,9 +287,10 @@ function renderGroup(g) {
       <tbody>${list.map((r) => `<tr>${cols.map((k) => `<td data-label="${esc(headers[k] || k)}">${esc(fmtTaxValue(r[k]))}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
   }
   if (g.loadError) body += `<p class="error small">Не вдалося завантажити: ${esc(g.loadError)}</p>`;
-  return `<details class="card tax-group" ${body ? "" : "data-empty"}>
-    <summary><span>${esc(g.title || "Блок " + g.idGroup)}</span><span class="muted small">${body ? (list.length ? `записів: ${list.length}` : "") : "немає даних"}</span></summary>
-    ${body || `<p class="muted small">У Кабінеті немає даних цього блоку.</p>`}</details>`;
+  if (!body) return ""; // порожні блоки Кабінету не показуємо
+  return `<details class="card tax-group">
+    <summary><span>${esc(g.title || "Блок " + g.idGroup)}</span><span class="muted small">${list.length ? `записів: ${list.length}` : ""}</span></summary>
+    ${body}</details>`;
 }
 
 function loadAccount() {
@@ -322,7 +324,7 @@ function loadAccount() {
   $("#tax-summary").innerHTML = `
     <div class="card tax-main">
       <dl class="kv kv-main">${kv.map(([k, v]) => `<dt>${k}</dt><dd>${esc(fmtTaxValue(v))}</dd>`).join("")}</dl>
-      ${s.ep.length ? `<h4>Платник єдиного податку</h4><ul class="plain">${s.ep.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : `<p class="muted small">Даних про реєстрацію платником єдиного податку немає.</p>`}
+      ${s.ep.length ? `<h4>Платник єдиного податку</h4><ul class="plain">${s.ep.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}
       ${s.kved.length ? `<h4>КВЕД</h4><ul class="plain kved">${[...mainK, ...otherK].map((k) => `<li>${k.main ? "<b>" : ""}${esc(k.code || "")} ${esc(k.name || k.raw.map(([, v]) => v).join(" · "))}${k.main ? "</b> <span class=\"muted small\">основний</span>" : ""}</li>`).join("")}</ul>` : ""}
     </div>`;
   $("#tax-groups").innerHTML = taxGroups().map(renderGroup).join("");
