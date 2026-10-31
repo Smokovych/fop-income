@@ -124,7 +124,8 @@
                 <input type="password" id="tax-key-password" autocomplete="off" spellcheck="false"></label>
               <label class="field hidden" id="tax-tin-field">РНОКПП<span class="muted small"> — у сертифікаті вашого ключа його немає, тож вкажіть вручну (10 цифр)</span>
                 <input id="tax-tin" inputmode="numeric" maxlength="10" placeholder="1234567890" autocomplete="off"></label>
-              <div class="conn-actions"><button class="btn primary" type="submit">Відкрити ключ</button><button class="btn" type="button" id="btn-tax-close-key">Закрити ключ</button></div>
+              <div class="conn-actions"><button class="btn primary" type="submit">Зчитати</button><button class="btn hidden" type="button" id="btn-kep-save">Зберегти ключ на сервері</button><button class="btn hidden" type="button" id="btn-tax-close-key">Закрити ключ</button></div>
+              <p class="muted small hidden" id="kep-save-hint">Для автоматичного оновлення інформації ви можете зберегти ключ на сервері</p>
               <p id="tax-key-status" class="small muted"></p>
               <p class="muted small" id="tax-key-note">🔒 Ключ і пароль залишаються лише в пам'яті цієї вкладки: програма їх не зберігає й нікуди не надсилає. До Кабінету йде тільки підписаний РНОКПП. Після перезавантаження сторінки ключ треба відкрити знову.</p>
             </form>
