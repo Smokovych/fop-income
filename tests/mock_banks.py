@@ -104,6 +104,7 @@ def _gen_privat():
 
 PRIVAT = _gen_privat()
 NBU_USD = 41.0
+CMP_RESPONSE = None  # байти відповіді CMP для тестів
 
 
 class H(BaseHTTPRequestHandler):
@@ -129,6 +130,14 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path.startswith("/mono/personal/webhook"):
             return self._json({"status": "ok"})
+        if self.path == "/cmp":  # імітація CMP надавача: повертає тіло з CMP_RESPONSE (якщо задано)
+            n = int(self.headers.get("Content-Length") or 0)
+            self.rfile.read(n)
+            data = CMP_RESPONSE or b""
+            self.send_response(200 if data else 404)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            return self.wfile.write(data)
         self._json({"error": "nf"}, 404)
 
     def do_GET(self):
@@ -172,6 +181,17 @@ class H(BaseHTTPRequestHandler):
             more = off + lim < len(items)
             return self._json({"status": "SUCCESS", "type": "transactions", "exist_next_page": more,
                                "next_page_id": str(off + lim) if more else None, "transactions": page})
+        if p.startswith("/tax/payer_card"):  # імітація Кабінету: приймає будь-який підпис довжиною від 150
+            auth = self.headers.get("Authorization") or ""
+            if len(auth) < 150:
+                return self._json({"error": "invalid_token"}, 401)
+            if p == "/tax/payer_card":
+                return self._json([{"idGroup": 1, "title": "Ідентифікаційні дані", "type": 1,
+                                    "headers": {"TIN": "Податковий номер", "FULL_NAME": "Повне найменування"},
+                                    "values": {"TIN": "1234567890", "FULL_NAME": "ФОП ШЕВЧЕНКО МИХАЙЛО"}, "listValues": None},
+                                   {"idGroup": 14, "title": "Дані про банківські рахунки", "type": 2, "headers": {}, "values": None, "listValues": None}])
+            return self._json({"idGroup": int(p.rsplit("/", 1)[1]), "page": int(qs.get("page", 0)),
+                               "values": [{"MFO": 322001, "CLIENT_COUNT": "UA213220010000026001000000001"}]})
         if p == "/nbu":
             d = qs["date"]
             return self._json([{"r030": 840, "cc": qs["valcode"], "rate": NBU_USD, "exchangedate": f"{d[6:]}.{d[4:6]}.{d[:4]}"}])

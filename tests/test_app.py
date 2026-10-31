@@ -20,6 +20,8 @@ os.environ.update({
     "MONO_API": f"http://127.0.0.1:{MOCK_PORT}/mono",
     "PRIVAT_API": f"http://127.0.0.1:{MOCK_PORT}/privat",
     "NBU_API": f"http://127.0.0.1:{MOCK_PORT}/nbu",
+    "TAX_API": f"http://127.0.0.1:{MOCK_PORT}/tax",
+    "CMP_TEST_URL": f"http://127.0.0.1:{MOCK_PORT}/cmp",
     "MONO_MIN_INTERVAL_SEC": "0",
     "APP_PASSWORD": "secret-pass",
     "PUBLIC_URL": "https://fop.example.com",
@@ -327,6 +329,27 @@ class T6_SharedState(T5_Http):
         st, body, _ = self.req("GET", "/proxy/nbu?valcode=USD&date=20260105&json", cookie=c)
         self.assertEqual(json.loads(body)[0]["rate"], mock_banks.NBU_USD)
         self.assertEqual(self.req("GET", "/proxy/nbu?valcode=usd;x&date=20260105", cookie=c)[0], 400)
+
+    def test_h_tax_bridge(self):
+        import base64
+        c = self.login()
+        tb = lambda b: self.req("POST", "/proxy/tax-bridge", b, cookie=c)
+        self.assertEqual(self.req("POST", "/proxy/tax-bridge", {"path": "payer_card", "auth": "A" * 200})[0], 401)
+        st, body, _ = tb({"path": "payer_card", "auth": "A" * 200})
+        d = json.loads(body)
+        self.assertEqual((st, d["status"], d["http"]), (200, "SUCCESS", 200))
+        self.assertEqual(json.loads(d["body"])[0]["values"]["TIN"], "1234567890")
+        d = json.loads(tb({"path": "payer_card/14", "params": {"page": 0, "size": 100, "evil": "x"}, "auth": "A" * 200})[1])
+        self.assertEqual(json.loads(d["body"])["idGroup"], 14)
+        d = json.loads(tb({"path": "payer_card", "auth": "A" * 100 + "=="})[1])  # підпис замалий для «Кабінету»
+        self.assertEqual(d["http"], 401)
+        self.assertEqual(tb({"path": "ta/splatp", "auth": "A" * 200})[0], 403)          # лише облікові дані
+        self.assertEqual(tb({"path": "payer_card", "auth": "bad auth!"})[0], 400)
+        # CMP: лише адреси надавачів зі списку; відповідь — base64
+        mock_banks.CMP_RESPONSE = b"\x30\x03\x02\x01\x01"
+        d = json.loads(tb({"path": "cmp", "url": "http://ca.monobank.ua/services/cmp/", "body": base64.b64encode(b"q").decode()})[1])
+        self.assertEqual((d["http"], base64.b64decode(d["body64"])), (200, mock_banks.CMP_RESPONSE))
+        self.assertEqual(tb({"path": "cmp", "url": "http://evil.example/", "body": ""})[0], 403)
 
     def test_g_ui_served_in_server_mode(self):
         st, body, h = self.req("GET", "/")

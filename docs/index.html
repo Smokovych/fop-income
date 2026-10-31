@@ -322,6 +322,7 @@ label.field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; 
 label.field input { width: 100%; }
 .small.ok { color: var(--good); }
 p.small.warn { padding: 8px 12px; }
+.grid-2.single { grid-template-columns: minmax(0, 640px); }
 </style>
 </head>
 <body>
@@ -428,7 +429,7 @@ p.small.warn { padding: 8px 12px; }
         <div id="tax-error" class="warn" hidden></div>
 
         <div id="tax-setup" class="tax-setup">
-          <p class="muted">Дані беруться з Електронного кабінету платника через його офіційний API. Кабінет пускає лише з кваліфікованим електронним підписом (КЕП): відкрийте свій ключ і один раз налаштуйте міст.</p>
+          <p class="muted" id="tax-intro">Дані беруться з Електронного кабінету платника через його офіційний API. Кабінет пускає лише з кваліфікованим електронним підписом (КЕП): відкрийте свій ключ і один раз налаштуйте міст.</p>
           <div class="grid-2">
             <form class="card" id="form-tax-key" autocomplete="off">
               <h3>Крок 1. Ваш ключ (КЕП)</h3>
@@ -1258,6 +1259,9 @@ function out_(obj) {
 let kepKey = null;      // відкритий ключ: { info, sign(text) }
 let kepAuth = null;     // готовий підпис РНОКПП на цю сесію: { tin, b64 }
 let certSearch = null;  // null | "searching" | "notfound" | "needbridge" | "oldbridge"
+// На сервері міст не потрібен: ті самі запити робить сам сервер (/proxy/tax-bridge)
+const TAX_VIA_SERVER = typeof SERVER_MODE !== "undefined" && SERVER_MODE;
+const taxReady = () => TAX_VIA_SERVER || !!(S.tax && S.tax.bridge_url);
 
 async function openKepFiles(files, password) {
   if (typeof FopKep === "undefined") throw new Error("Бібліотека підпису не завантажилась. Оновіть сторінку.");
@@ -1275,8 +1279,8 @@ function kepTin() {
 async function ensureCert() {
   if (!kepKey || kepKey.info.hasCert) return true;
   if (S.tax.cert_b64 && kepKey.addCerts([S.tax.cert_b64])) return true;
-  if (!S.tax.bridge_url) { certSearch = "needbridge"; renderKeyStatus(); return false; }
-  if ((S.tax.bridge_version || 1) < TAX_BRIDGE_VERSION) { certSearch = "oldbridge"; renderKeyStatus(); return false; }
+  if (!taxReady()) { certSearch = "needbridge"; renderKeyStatus(); return false; }
+  if (!TAX_VIA_SERVER && (S.tax.bridge_version || 1) < TAX_BRIDGE_VERSION) { certSearch = "oldbridge"; renderKeyStatus(); return false; }
   certSearch = "searching"; renderKeyStatus();
   try {
     const r = await kepKey.findCert(async (url, bodyB64) => {
@@ -1311,15 +1315,18 @@ async function getAuth() {
 // ---------------------------------------------------------------- запити через міст
 async function bridgePost(payload) {
   const t = S.tax || {};
-  if (!t.bridge_url) throw new Error("Спершу підключіть міст до Кабінету (крок 2)");
+  if (!taxReady()) throw new Error("Спершу підключіть міст до Кабінету (крок 2)");
   let r;
   try {
-    r = await fetch(t.bridge_url, {
-      method: "POST", redirect: "follow",
-      headers: { "Content-Type": "text/plain;charset=utf-8" }, // без попереднього запиту CORS
-      body: JSON.stringify(Object.assign({ key: t.bridge_key }, payload)),
-    });
+    r = TAX_VIA_SERVER
+      ? await fetch("/proxy/tax-bridge", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) })
+      : await fetch(t.bridge_url, {
+        method: "POST", redirect: "follow",
+        headers: { "Content-Type": "text/plain;charset=utf-8" }, // без попереднього запиту CORS
+        body: JSON.stringify(Object.assign({ key: t.bridge_key }, payload)),
+      });
   } catch {
+    if (TAX_VIA_SERVER) throw new Error("Немає зв'язку з сервером програми");
     const err = new Error("Програма не може прочитати відповідь мосту до Кабінету. Перевірте розгортання в Google: доступ «Усі», адреса /exec, нова версія коду.");
     err.bridgeUnreachable = true;
     throw err;
@@ -1328,7 +1335,7 @@ async function bridgePost(payload) {
   let w;
   try { w = JSON.parse(text); }
   catch { throw new Error(/<html/i.test(text) ? "Міст відповів сторінкою Google замість даних. У розгортанні оберіть доступ «Усі»." : "Міст повернув некоректну відповідь"); }
-  if (w.status !== "SUCCESS") throw new Error(w.message || "Помилка мосту");
+  if (w.status !== "SUCCESS") throw new Error(w.message || w.error || "Помилка мосту");
   if (w.bridge) throw new Error("Це адреса старого мосту або мосту ПриватБанку. Для Кабінету потрібен окремий міст з кодом із цієї вкладки.");
   return w;
 }
@@ -1462,7 +1469,10 @@ function loadAccount() {
   const hasCard = taxGroups().length > 0;
   // крок 1-2: підпис і міст
   // кроки підключення згортаються, коли все працює; при помилці (напр. підпис застарів) — розгортаються
-  $("#tax-setup").classList.toggle("collapsed", !!(hasCard && kepKey && t.bridge_url && !t.last_error));
+  $("#tax-setup").classList.toggle("collapsed", !!(hasCard && kepKey && taxReady() && !t.last_error));
+  $("#form-tax-bridge").classList.toggle("hidden", TAX_VIA_SERVER);
+  $("#form-tax-bridge").parentElement.classList.toggle("single", TAX_VIA_SERVER);
+  if (TAX_VIA_SERVER) $("#tax-intro").textContent = "Дані беруться з Електронного кабінету платника через його офіційний API. Кабінет пускає лише з кваліфікованим електронним підписом (КЕП): відкрийте свій ключ — решту зробить сервер програми.";
   $("#tax-tin").value = $("#tax-tin").value || S.settings.owner_tax_id || "";
   renderKeyStatus();
   $("#tax-bridge-status").innerHTML = t.bridge_url ? `✓ Міст підключено` : "Міст ще не підключено";
@@ -1509,7 +1519,7 @@ function renderKeyStatus() {
 
 async function refreshPayerCard() {
   const btn = $("#btn-tax-load");
-  if (!S.tax.bridge_url || !kepKey) {
+  if (!taxReady() || !kepKey) {
     $("#tax-setup").classList.remove("collapsed");
     const target = !kepKey ? "#tax-key-files" : "#tax-bridge-url";
     $(target).scrollIntoView({ behavior: "smooth", block: "center" });
@@ -1555,7 +1565,7 @@ function initTaxTab() {
       const c = kepKey.info.cert;
       if (c && c.tin) $("#tax-tin").value = c.tin;
       renderKeyStatus();
-      if (c && S.tax.bridge_url) refreshPayerCard();
+      if (c && taxReady()) refreshPayerCard();
     } catch (err) { kepKey = null; renderKeyStatus(); toast(err.message, true); }
     btn.disabled = false; btn.textContent = "Відкрити ключ";
   });

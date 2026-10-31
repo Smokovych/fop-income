@@ -142,6 +142,11 @@ def px_privat(h, m, body):
     _proxied(h, proxy.privat(m["path"], q, h.headers.get("X-Privat-Token", "")))
 
 
+@route("POST", "/proxy/tax-bridge")
+def px_tax(h, m, body):
+    return proxy.tax_bridge(body or {})
+
+
 @route("GET", "/proxy/nbu")
 def px_nbu(h, m, body):
     q = {k: v[0] for k, v in h._qs.items()}
