@@ -98,7 +98,7 @@
             <button class="btn" type="button" id="btn-history">Попередні роки</button>
             <button class="btn" type="button" id="btn-stmt-file" title="Виписка ПриватБанку з Приват24 для бізнесу (Excel), можна кілька файлів одразу">Завантажити виписку</button>
             <input type="file" id="stmt-file" accept=".xlsx,.xls,.csv" multiple hidden>
-            <a class="btn" id="btn-export" href="#" role="button">Книга обліку доходів (CSV)</a>
+            <a class="btn" id="btn-export" href="#" role="button">Книга обліку доходів</a>
           </div>
         </div>
         <div class="card ai-panel hidden" id="ai-panel">
@@ -155,7 +155,8 @@
         <div id="taxes-error" class="warn" hidden></div>
         <nav class="subtabs" id="taxes-tabs"></nav>
         <div id="taxes-body"></div>
-        <dialog id="tax-req-dialog" class="req-dialog">
+        
+  <dialog id="tax-req-dialog" class="req-dialog">
           <div class="card-head"><h3 id="req-title">Реквізити</h3><button type="button" class="btn ghost" id="req-close">✕</button></div>
           <div class="req-grid">
             <dl class="kv" id="req-fields"></dl>
@@ -345,6 +346,13 @@
 
   <div id="toast" class="toast hidden"></div>
   <div id="tooltip" class="tooltip hidden"></div>
-  <script>/*JS*/</script>
+  <dialog id="book-dialog" class="card">
+    <h3>Книга обліку доходів</h3>
+    <p class="muted small">Файл Excel за формою: місяці, квартали, півріччя, 9 місяців і рік. ПІБ, РНОКПП і група — з Налаштувань та Кабінету платника.</p>
+    <label>Рік <select id="book-year"></select></label>
+    <p class="small" id="book-note"></p>
+    <div class="conn-actions"><button class="btn primary" type="button" id="book-go">Сформувати</button><button class="btn" type="button" id="book-cancel">Скасувати</button></div>
+  </dialog>
+<script>/*JS*/</script>
 </body>
 </html>
