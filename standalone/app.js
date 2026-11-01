@@ -874,30 +874,41 @@ $("#btn-more").addEventListener("click", () => { state.txShown += 200; loadTrans
 // 7 — власні кошти (перекази між своїми рахунками). Кол. 8 = 2 + 3 + 4 − 5 − 6 − 7 — дохід, що оподатковується ЄП.
 // Гривня від продажу валюти в книгу не потрапляє зовсім: дохід — це сама валюта на дату зарахування за курсом НБУ.
 const BOOK_TRANSIT = new Set(["loan", "refund_in", "tax_refund", "other_non_income"]);
+// Кожна операція, що потрапляє в книгу, — запис із сумами по колонках (у копійках); місяці й дні — суми записів
+const BOOK_KEYS = ["cash", "bank", "com", "ref", "transit", "own"];
+function bookEntry(t) {
+  const acc = S.accounts[t.account_id], c = catOf(t);
+  const uah = t.uah_amount != null ? t.uah_amount : t.currency === "UAH" ? t.amount : null;
+  const e = { t, cash: 0, bank: 0, com: 0, ref: 0, transit: 0, own: 0 };
+  if (t.amount > 0 && c === "income") {
+    const inc = incomeUah(t);
+    if (inc == null) return "missing";
+    const got = Math.round(t.amount * t.nbu_rate);
+    if (acc.type === "cash") e.cash = got; else e.bank = got;
+    e.com = inc - got;
+  } else if (t.amount > 0 && acc.is_fop && (c === "own_transfer" || BOOK_TRANSIT.has(c))) {
+    if (uah == null) return "missing";
+    e.bank = uah;
+    if (c === "own_transfer") e.own = uah; else e.transit = uah;
+  } else if (c === "refund_to_buyer") {
+    if (uah == null) return "missing";
+    e.ref = Math.abs(uah);
+  } else return null;
+  e.inc = e.cash + e.bank + e.com - e.ref - e.transit - e.own;
+  return e;
+}
+const bookSum = (list) => { const r = { cash: 0, bank: 0, com: 0, ref: 0, transit: 0, own: 0, inc: 0 }; for (const e of list) for (const k in r) r[k] += e[k]; return r; };
 function bookData(year) {
-  const m = Array.from({ length: 12 }, () => ({ cash: 0, bank: 0, com: 0, ref: 0, transit: 0, own: 0 }));
+  const entries = [];
   let missing = 0;
   for (const t of Object.values(S.tx)) {
-    const acc = S.accounts[t.account_id];
-    if (!acc || !t.date.startsWith(year + "-")) continue;
-    const c = catOf(t), r = m[+t.date.slice(5, 7) - 1];
-    const uah = t.uah_amount != null ? t.uah_amount : t.currency === "UAH" ? t.amount : null;
-    if (t.amount > 0 && c === "income") {
-      const inc = incomeUah(t);
-      if (inc == null) { missing++; continue; }
-      const got = Math.round(t.amount * t.nbu_rate);
-      if (acc.type === "cash") r.cash += got; else r.bank += got;
-      r.com += inc - got;
-    } else if (t.amount > 0 && acc.is_fop && (c === "own_transfer" || BOOK_TRANSIT.has(c))) {
-      if (uah == null) { missing++; continue; }
-      r.bank += uah;
-      if (c === "own_transfer") r.own += uah; else r.transit += uah;
-    } else if (c === "refund_to_buyer") {
-      if (uah == null) { missing++; continue; }
-      r.ref += Math.abs(uah);
-    }
+    if (!S.accounts[t.account_id] || !t.date.startsWith(year + "-")) continue;
+    const e = bookEntry(t);
+    if (e === "missing") missing++; else if (e) entries.push(e);
   }
-  return { months: m, missing };
+  entries.sort((a, b) => a.t.ts - b.t.ts);
+  const months = Array.from({ length: 12 }, (_, i) => bookSum(entries.filter((e) => +e.t.date.slice(5, 7) === i + 1)));
+  return { months, entries, missing };
 }
 
 function fopGroup() {
@@ -971,27 +982,76 @@ function buildIncomeBook(year) {
   return { blob, missing, total: calc["I" + lastRow], name, tin };
 }
 
+// ---------------------------------------------------------------- книга в програмі: місяць → дні → операції
+const BOOK = { year: null, openM: new Set(), openD: new Set() };
+const MONTHS_NOM = ["Січень", "Лютий", "Березень", "Квітень", "Травень", "Червень", "Липень", "Серпень", "Вересень", "Жовтень", "Листопад", "Грудень"];
+function bookCells(r, cls = "") {
+  const v = (k) => (r[k] ? nf.format(r[k] / 100) : `<span class="muted">—</span>`);
+  return BOOK_KEYS.map((k) => `<td class="num ${cls}">${v(k)}</td>`).join("") + `<td class="num book-inc ${cls}">${nf.format(r.inc / 100)}</td>`;
+}
+function renderBook() {
+  const years = [...new Set([new Date().getFullYear(), ...Object.values(S.tx).map((t) => +t.date.slice(0, 4))])].sort((a, b) => b - a);
+  if (!BOOK.year) BOOK.year = $("#f-period").value === "year" ? +$("#f-period-year").value : +String($("#f-from").value || state.year).slice(0, 4);
+  $("#book-year").innerHTML = years.map((y) => `<option ${y === BOOK.year ? "selected" : ""}>${y}</option>`).join("");
+  const { months, entries, missing } = bookData(BOOK.year);
+  const ts = taxSummary(), p = taxParams(BOOK.year);
+  const name = (S.settings.owner_name || String(ts.name || "").replace(/^ФОП\s+/i, "")).trim(), tin = String(S.settings.owner_tax_id || ts.tin || "");
+  $("#book-head").innerHTML = `ФОП <b>${esc(name || "— вкажіть ПІБ у Налаштуваннях")}</b>${tin ? ", РНОКПП " + esc(tin) : ""} · ЄП ${fopGroup()} група ${String(p.single_tax_rate ?? 5).replace(".", ",")}% · ${BOOK.year} рік`
+    + (missing ? ` · <span class="error">${missing} операцій без курсу НБУ не враховано</span>` : "");
+  const rows = [];
+  const total = (label, list) => rows.push(`<tr class="book-total"><td>${label}</td>${bookCells(bookSum(list))}</tr>`);
+  const qList = [];
+  for (let q = 0; q < 4; q++) {
+    const qEntries = [];
+    for (let k = 0; k < 3; k++) {
+      const mi = q * 3 + k, open = BOOK.openM.has(mi);
+      const me = entries.filter((e) => +e.t.date.slice(5, 7) === mi + 1);
+      qEntries.push(...me);
+      rows.push(`<tr class="book-month${me.length ? " clickable" : ""}${open ? " open" : ""}" data-m="${mi}"><td><span class="caret">${me.length ? (open ? "▾" : "▸") : ""}</span>${MONTHS_NOM[mi]}</td>${bookCells(months[mi])}</tr>`);
+      if (!open) continue;
+      const days = {};
+      for (const e of me) (days[e.t.date] = days[e.t.date] || []).push(e);
+      for (const [d, de] of Object.entries(days)) {
+        const dOpen = BOOK.openD.has(d);
+        rows.push(`<tr class="book-day clickable${dOpen ? " open" : ""}" data-d="${d}"><td><span class="caret">${dOpen ? "▾" : "▸"}</span>${fmtDate(d)} <span class="muted small">(${de.length})</span></td>${bookCells(bookSum(de))}</tr>`);
+        if (dOpen) for (const e of de) {
+          const t = e.t, acc = S.accounts[t.account_id];
+          rows.push(`<tr class="book-op"><td><div>${esc(t.counter_name || "—")}</div><div class="muted small">${esc(new Date(t.ts * 1000).toLocaleTimeString("uk-UA", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Kyiv" }))} · ${esc(CATEGORIES[catOf(t)] || "")} · ${esc(acc.name)}${t.currency !== "UAH" ? ` · ${nf.format(Math.abs(t.amount) / 100)} ${esc(t.currency)} × ${t.nbu_rate}` : ""}</div><div class="muted small book-desc">${esc(t.description || "")}</div></td>${bookCells(e, "small")}</tr>`);
+        }
+      }
+    }
+    qList.push(qEntries);
+    total(`${q + 1} квартал`, qEntries);
+    if (q === 1) total("1-ше півріччя", [...qList[0], ...qList[1]]);
+    if (q === 2) total("9 місяців", [...qList[0], ...qList[1], ...qList[2]]);
+    if (q === 3) total(`Рік`, entries);
+  }
+  $("#book-body").innerHTML = rows.join("");
+}
 $("#btn-export").addEventListener("click", (e) => {
   e.preventDefault();
-  const years = [...new Set([new Date().getFullYear(), ...Object.values(S.tx).map((t) => +t.date.slice(0, 4))])].sort((a, b) => b - a);
-  const per = $("#f-period").value === "year" ? +$("#f-period-year").value : +String($("#f-from").value || state.year).slice(0, 4);
-  $("#book-year").innerHTML = years.map((y) => `<option ${y === per ? "selected" : ""}>${y}</option>`).join("");
-  $("#book-note").textContent = "";
-  $("#book-dialog").showModal();
+  const p = $("#book-panel");
+  p.classList.toggle("hidden");
+  if (!p.classList.contains("hidden")) { renderBook(); p.scrollIntoView({ behavior: "smooth", block: "start" }); }
 });
-$("#book-cancel").addEventListener("click", () => $("#book-dialog").close());
-$("#book-go").addEventListener("click", () => {
-  const year = +$("#book-year").value;
+$("#book-year").addEventListener("change", () => { BOOK.year = +$("#book-year").value; BOOK.openM.clear(); BOOK.openD.clear(); renderBook(); });
+$("#book-body").addEventListener("click", (e) => {
+  const tr = e.target.closest("tr.clickable");
+  if (!tr) return;
+  if (tr.dataset.m != null) { const m = +tr.dataset.m; BOOK.openM.has(m) ? BOOK.openM.delete(m) : BOOK.openM.add(m); }
+  if (tr.dataset.d) { const d = tr.dataset.d; BOOK.openD.has(d) ? BOOK.openD.delete(d) : BOOK.openD.add(d); }
+  renderBook();
+});
+$("#book-xlsx").addEventListener("click", () => {
+  const year = BOOK.year;
   const b = buildIncomeBook(year);
   if (!b.name || !b.tin) toast("У шапці немає ПІБ або РНОКПП — вкажіть їх у Налаштуваннях або завантажте облікові дані з Кабінету", true);
-  if (b.missing) toast(`${b.missing} операцій без курсу НБУ не потрапили в книгу — оновіть виписку і сформуйте ще раз`, true);
   const a = document.createElement("a");
   a.href = URL.createObjectURL(b.blob);
   a.download = `Книга обліку доходів ${year}${b.name ? " — " + b.name.split(" ")[0] : ""}.xlsx`;
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 10000);
-  $("#book-dialog").close();
-  toast(`Книгу за ${year} рік сформовано. Дохід за рік: ${nf.format(b.total)} ₴`);
+  toast(`Книгу за ${year} рік завантажено. Дохід за рік: ${nf.format(b.total)} ₴`);
 });
 
 // ============================================================ банки
