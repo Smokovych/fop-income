@@ -56,6 +56,7 @@
   .taxes-list .tax-balance { margin: 0 0 10px; font-size: 15px; }
   .taxes-list .budget-table td.num { white-space: nowrap; }
   .taxes-list tr.tax-start td { font-style: italic; color: var(--muted, #888); border-top: 2px solid rgba(127,127,127,.3); }
+  #taxes-year { width: auto; margin-left: 4px; }
 </style>
 </head>
 <body>
@@ -202,7 +203,7 @@
       <section id="tab-taxes" class="tab hidden">
         <div class="section-head">
           <h2>Податки</h2>
-          <div class="conn-actions"><span id="taxes-meta" class="muted small"></span>
+          <div class="conn-actions"><label class="small">Рік <select id="taxes-year" aria-label="Рік"></select></label><span id="taxes-meta" class="muted small"></span>
             <button class="btn primary" type="button" id="btn-taxes-refresh">Оновити з Кабінету</button></div>
         </div>
         <div id="taxes-error" class="warn" hidden></div>

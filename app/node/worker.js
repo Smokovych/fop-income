@@ -148,6 +148,25 @@ async function main() {
     }
     return { state: S };
   }
+  if (req.cmd === "tax-budget") {
+    // стан розрахунків з бюджетом за вибраний (попередній) рік → S.tax.budgets[рік]
+    F.load(req.state);
+    const S = F.S, year = Number(req.year);
+    S.tax = S.tax || {};
+    S.tax.budgets = S.tax.budgets || {};
+    try {
+      const k = decrypt(req.blob, req.secret);
+      const key = await openStoredKey(ctx, k.files, k.password, S.tax.cert_b64);
+      const tin = (key.info.cert && key.info.cert.tin) || S.settings.owner_tax_id;
+      if (!/^\d{8,10}$/.test(String(tin || ""))) throw new Error("У сертифікаті ключа немає РНОКПП — вкажіть його в Налаштуваннях");
+      const auth = await key.sign(String(tin));   // підписується лише РНОКПП
+      S.tax.budgets[year] = await F.fetchBudget(auth, year);
+      F.log("info", `Стан розрахунків за ${year} рік завантажено з Кабінету`);
+      return { state: S };
+    } catch (e) {
+      return { state: S, error: e.message };
+    }
+  }
   throw new Error("Невідома команда");
 }
 

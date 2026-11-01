@@ -24,6 +24,43 @@ async function fetchBudget(auth, year) {
   return { year, fetched_at: nowTs(), items, error: null };
 }
 
+// ---------------------------------------------------------------- рік на вкладці
+// Поточний рік — S.tax.budget (оновлюється разом з обліковими даними), попередні — S.tax.budgets[рік]
+const curYear = () => Number(kyivDate(nowTs()).slice(0, 4));
+let taxesYear = null;
+function taxesBudget() {
+  const y = taxesYear || curYear();
+  if (!S.tax) return null;
+  if (y === curYear()) return S.tax.budget || null;
+  return (S.tax.budgets || {})[y] || null;
+}
+
+// Завантажити стан розрахунків за вибраний рік: сервер (збережений ключ) або цей браузер (відкритий ключ і міст)
+async function loadBudgetYear(year) {
+  if (year === curYear()) return refreshPayerCard().then(loadTaxes);
+  const btn = $("#btn-taxes-refresh");
+  btn.disabled = true; btn.textContent = "Завантажую…";
+  try {
+    if (TAX_VIA_SERVER && !kepKey) {
+      if (!serverKep || !serverKep.kep || !serverKep.kep.stored) throw new Error("Спершу збережіть ключ КЕП на сервері (вкладка «Облікові дані»)");
+      await flushRemote();
+      const r = await api("POST", "/api/tax/budget", JSON.stringify({ year }));
+      if (!r.ok) throw new Error(r.data.error || "Не вдалося завантажити дані за " + year + " рік");
+      await pollRemote(true);
+      if (r.data.error) throw new Error(r.data.error);
+    } else {
+      if (!kepKey || !taxReady()) throw new Error("Відкрийте ключ КЕП на вкладці «Облікові дані»");
+      const auth = await getAuth();
+      S.tax.budgets = S.tax.budgets || {};
+      S.tax.budgets[year] = await fetchBudget(auth, year);
+      save(true);
+    }
+    toast(`Стан розрахунків за ${year} рік завантажено`);
+  } catch (e) { toast(e.message, true); }
+  btn.disabled = false; btn.textContent = "Оновити з Кабінету";
+  loadTaxes();
+}
+
 // ---------------------------------------------------------------- класифікація платежів
 // Назви й порядок вкладок за кодом класифікації доходів бюджету: спершу податки ФОП, далі — з найманих працівників,
 // потім податок на нерухомість; решта — за активністю, з назвою з Кабінету.
@@ -40,7 +77,7 @@ const num = (v) => (v == null || v === "" ? 0 : Number(String(v).replace(",", ".
 const opRows = (it) => (it.ops || []).filter((o) => o && o.dateoper && String(o.vidpa || "").trim() !== "Всього");
 
 function budgetTabs() {
-  const b = S.tax && S.tax.budget;
+  const b = taxesBudget();
   if (!b || !Array.isArray(b.items)) return [];
   const items = b.items.filter((it) => num(it.narah0) || num(it.splbd0) || num(it.nedoim0) || num(it.perepl0) || opRows(it).length);
   const rank = (it) => { const i = KBK_ORDER.indexOf(kbkOf(it)); return i < 0 ? 100 : i; };
@@ -108,16 +145,20 @@ function qrSvg(text) {
 let taxesActive = null;
 
 function loadTaxes() {
-  const b = S.tax && S.tax.budget;
+  const b = taxesBudget();
   const tabs = budgetTabs();
-  const year = (b && b.year) || new Date().getFullYear();
-  $("#taxes-meta").textContent = b && b.fetched_at ? `${year} рік · оновлено з Кабінету ${new Date(b.fetched_at * 1000).toLocaleString("uk-UA")}` : "";
+  const year = taxesYear || curYear();
+  const first = Math.min(+String(S.settings.sync_start || curYear()).slice(0, 4), curYear() - 1, ...Object.keys((S.tax && S.tax.budgets) || {}).map(Number));
+  const ys = []; for (let y = curYear(); y >= Math.max(first, 2017); y--) ys.push(y);
+  $("#taxes-year").innerHTML = ys.map((y) => `<option value="${y}" ${y === year ? "selected" : ""}>${y}</option>`).join("");
+  $("#taxes-meta").textContent = b && b.fetched_at ? `оновлено з Кабінету ${new Date(b.fetched_at * 1000).toLocaleString("uk-UA")}` : "";
   $("#taxes-error").hidden = !(b && b.error);
   $("#taxes-error").textContent = (b && b.error) || "";
   $("#taxes-tabs").innerHTML = "";
   if (!tabs.length) {
-    $("#taxes-body").innerHTML = `<div class="card hint"><b>${b ? "У Кабінеті немає розрахунків за " + year + " рік." : "Даних ще немає."}</b>
-      ${b ? "" : "Натисніть «Оновити з Кабінету». Потрібен ключ КЕП — на вкладці «Облікові дані» його можна зчитати або зберегти на сервері."}</div>`;
+    $("#taxes-body").innerHTML = `<div class="card hint"><b>${b ? "У Кабінеті немає розрахунків за " + year + " рік." : `Даних за ${year} рік ще немає.`}</b>
+      ${b ? "" : year === curYear() ? "Натисніть «Оновити з Кабінету». Потрібен ключ КЕП — на вкладці «Облікові дані» його можна зчитати або зберегти на сервері."
+        : `<div class="conn-actions" style="margin-top:8px"><button class="btn primary" type="button" id="btn-taxes-year-load">Завантажити ${year} рік з Кабінету</button></div>`}</div>`;
     return;
   }
   if (taxesActive && !tabs.some((t) => t.key === taxesActive)) taxesActive = null;
@@ -153,7 +194,7 @@ function taxDetail(t) {
   const start = bal;
   for (const x of ops) { bal += x.delta; x.bal = bal; }
   const balCell = (v) => `<span class="${v < -0.004 ? "neg" : v > 0.004 ? "pos" : ""}">${v < -0.004 ? "−" : ""}${money(Math.abs(v))}</span><div class="muted small">${v < -0.004 ? "борг" : v > 0.004 ? "переплата" : ""}</div>`;
-  const year = (S.tax.budget && S.tax.budget.year) || new Date().getFullYear();
+  const year = taxesYear || curYear();
   const rows = ops.slice().reverse().map((x) => `<tr><td class="td-date">${esc(x.o.dateoper)}</td>
       <td><div>${esc(x.o.namevid || x.o.vidpa || "")}</div>${x.o.templ && x.o.templ.trim() ? `<div class="muted small">${esc(x.o.templ.trim())}</div>` : ""}</td>
       <td class="num" data-label="Зараховано">${x.delta > 0.004 ? `<span class="pos">+${money(x.delta)}</span>` : ""}</td>
@@ -212,6 +253,7 @@ function openRequisites() {
 
 function initTaxesTab() {
   $("#taxes-body").addEventListener("click", async (e) => {
+    if (e.target.id === "btn-taxes-year-load") return loadBudgetYear(taxesYear || curYear());
     const row = e.target.closest("tr.tax-row");
     if (row) {
       taxesActive = taxesActive === row.dataset.key ? null : row.dataset.key;
@@ -224,11 +266,14 @@ function initTaxesTab() {
       try { await navigator.clipboard.writeText($("#raw-json").textContent); toast("Скопійовано"); } catch { toast("Не вдалося скопіювати", true); }
     }
     if (e.target.id === "btn-raw-all") {
-      const b = S.tax.budget || {};
+      const b = taxesBudget() || {};
       download(`stan-rozrakhunkiv_${b.year || ""}.json`, JSON.stringify((b.items || []).map(rawOf), null, 2), "application/json");
     }
   });
-  $("#btn-taxes-refresh").addEventListener("click", () => refreshPayerCard());
+  $("#btn-taxes-refresh").addEventListener("click", () => loadBudgetYear(taxesYear || curYear()));
+  $("#taxes-year").addEventListener("change", () => {
+    taxesYear = +$("#taxes-year").value; taxesActive = null; loadTaxes();
+  });
   $("#tax-req-dialog").addEventListener("click", async (e) => {
     if (e.target.dataset.copy) {
       try { await navigator.clipboard.writeText(e.target.dataset.copy); toast("Скопійовано"); } catch { toast("Не вдалося скопіювати", true); }

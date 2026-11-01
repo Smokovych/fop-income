@@ -183,6 +183,17 @@ def api_tax_refresh(h, m, body):
     return {"fetched_at": t.get("fetched_at"), "last_error": t.get("last_error")}
 
 
+@route("POST", "/api/tax/budget")
+def api_tax_budget(h, m, body):
+    try:
+        year = int((body or {}).get("year"))
+    except (TypeError, ValueError):
+        raise HttpError(400, "Вкажіть рік")
+    if not 2017 <= year <= 2100:
+        raise HttpError(400, "Некоректний рік")
+    return _bg(bg.tax_budget, year)
+
+
 @route("GET", "/api/ai/status")
 def api_ai_status(h, m, body):
     return {"enabled": ai.enabled(), "model": ai.MODEL}

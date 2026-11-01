@@ -207,6 +207,24 @@ def tax_refresh():
         status["running"] = None
 
 
+@_locked
+def tax_budget(year):
+    """Стан розрахунків з бюджетом за попередній рік (вкладка «Податки» → Рік)."""
+    r = db.q1("SELECT blob FROM kep_store WHERE id=1")
+    if not r:
+        raise WorkerError("Ключ КЕП не збережено на сервері")
+    state = store.get()["state"]
+    if not state:
+        raise WorkerError("Немає даних програми")
+    status["running"] = "tax"
+    try:
+        out = run_node({"cmd": "tax-budget", "state": state, "year": int(year), "blob": r["blob"], "secret": kep_secret()}, timeout=600)
+        apply_result(state, out["state"])
+        return {"error": out.get("error")}
+    finally:
+        status["running"] = None
+
+
 # ---------------------------------------------------------------- планувальник
 def _loop():
     time.sleep(90)  # дати серверу запуститися
