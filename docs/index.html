@@ -5625,8 +5625,18 @@ function fopKveds() {
 }
 const kvedSig = () => hash(fopKveds().sort().join("|"));
 const kvedKey = (t) => { const d = norm(t.description || "").replace(/\d+/g, "#").replace(/\s+/g, " ").trim().slice(0, 160); return d.length >= 4 ? hash(d) : null; };
+const cpKey = (t) => norm(t.counter_name || "").replace(/["«»'’]/g, "").replace(/\s+/g, " ").trim();
+// слова призначення без цифр — для пошуку схожих платежів (Жаккар ≥ 0,6)
+const purposeWords = (t) => new Set(norm(t.description || "").replace(/[^a-zа-яіїєґ]+/gi, " ").split(" ").filter((w) => w.length >= 4));
+function similarPurpose(a, b) {
+  const A = purposeWords(a), B = purposeWords(b);
+  if (!A.size || !B.size) return false;
+  let n = 0; for (const w of A) if (B.has(w)) n++;
+  return n / (A.size + B.size - n) >= 0.6;
+}
 function kvedInfo(t) {
   if (t.kved_ok || t.amount <= 0 || catOf(t) !== "income") return null;
+  if (S.kvedOkCp && S.kvedOkCp[cpKey(t)]) return null;
   const k = kvedKey(t), r = k && S.kvedChecks && S.kvedChecks[k];
   return r && r.ok === false && r.sig === kvedSig() ? r : null;
 }
@@ -5700,6 +5710,7 @@ function loadTransactions(reset) {
   const inc = all.filter((t) => catOf(t) === "income");
   const income = inc.reduce((a, t) => a + (incomeUah(t) || 0), 0);
   const comm = inc.reduce((a, t) => a + Math.round(commissionOf(t) * (t.nbu_rate || 1)), 0);
+  KV.flagged = Object.values(S.tx).filter(kvedInfo);   // для кнопок «усі від контрагента / зі схожим призначенням»
   const pending = all.filter(needsReview).length, kvN = all.filter(kvedInfo).length;
   $("#tx-summary").innerHTML = esc(`Знайдено операцій: ${all.length}. Дохід серед них: ${money(income / 100)}` + (comm ? `, у т.ч. комісія еквайрингу ${money(comm / 100)}` : ""))
     + (pending ? ` <span class="review-note">Чекають підтвердження: <b>${pending}</b> — вони вгорі списку й підсвічені жовтим.</span>` : "")
@@ -5730,8 +5741,16 @@ function txRow(t) {
   const review = rv ? `<div class="review-box"><div class="small"><b>Потрібне підтвердження.</b> ${esc(rv.reason)}.</div>
       <div class="review-actions"><button class="btn small review-yes">${yesLabel}</button><button class="btn small review-no">${noLabel}</button></div></div>` : "";
   const kv = kvedInfo(t);
-  const kvBox = kv ? `<div class="kved-box"><div class="small"><b>Можливо, немає КВЕДу.</b> ${esc(kv.reason || "Оплата за вид діяльності, якого немає серед ваших КВЕДів")}${kv.kved ? ` — потрібен КВЕД ${esc(kv.kved)}` : ""}.</div>
-      <div class="review-actions"><button class="btn small kved-yes">Відповідає КВЕДу</button></div></div>` : "";
+  let kvBox = "";
+  if (kv) {
+    const flagged = (KV.flagged || Object.values(S.tx).filter(kvedInfo)).filter((x) => x !== t);
+    const cp = cpKey(t), nCp = cp ? flagged.filter((x) => cpKey(x) === cp).length : 0;
+    const nSim = flagged.filter((x) => similarPurpose(t, x)).length;
+    kvBox = `<div class="kved-box"><div class="small"><b>Можливо, немає КВЕДу.</b> ${esc(kv.reason || "Оплата за вид діяльності, якого немає серед ваших КВЕДів")}${kv.kved ? ` — потрібен КВЕД ${esc(kv.kved)}` : ""}.</div>
+      <div class="review-actions"><button class="btn small kved-yes">Відповідає КВЕДу</button>
+      ${nCp ? `<button class="btn small kved-cp" title="Підтвердити всі платежі від цього контрагента, також майбутні">Усі від контрагента (${nCp + 1})</button>` : ""}
+      ${nSim ? `<button class="btn small kved-sim" title="Підтвердити всі платежі зі схожим призначенням">Усі зі схожим призначенням (${nSim + 1})</button>` : ""}</div></div>`;
+  }
   return `<tr data-id="${esc(t.id)}"${kv ? ` class="kved-review"` : rv ? ` class="needs-review"` : ""}>
     <td class="td-date">${fmtDate(t.date)}<div class="muted small">${time}${t.hold ? " · в обробці" : ""}</div></td>
     <td class="desc"><div class="cp">${esc(t.counter_name || t.description)}</div><div class="sub">${esc(t.counter_name ? t.description : "")}${t.comment ? " · " + esc(t.comment) : ""}</div></td>
@@ -5765,6 +5784,18 @@ function resolveReview(t, isIncome) {
 }
 
 $("#tx-table").addEventListener("click", (e) => {
+  if (e.target.classList.contains("kved-cp") || e.target.classList.contains("kved-sim")) {
+    const t = S.tx[e.target.closest("tr").dataset.id], byCp = e.target.classList.contains("kved-cp");
+    const list = Object.values(S.tx).filter((x) => kvedInfo(x) && (x === t || (byCp ? cpKey(x) === cpKey(t) : similarPurpose(t, x))));
+    for (const x of list) {
+      x.kved_ok = true;
+      const k = kvedKey(x); if (k && S.kvedChecks[k]) S.kvedChecks[k].ok = true;   // такі самі призначення в майбутньому теж
+    }
+    if (byCp && cpKey(t)) { S.kvedOkCp = S.kvedOkCp || {}; S.kvedOkCp[cpKey(t)] = true; }   // і майбутні платежі цього контрагента
+    log("info", `КВЕД підтверджено для ${list.length} платежів ${byCp ? "від «" + (t.counter_name || "") + "»" : "зі схожим призначенням"}`);
+    save(true); toast(`Підтверджено: ${list.length} платежів ${byCp ? "від контрагента" : "зі схожим призначенням"}`); loadTransactions("keep"); updateReviewBadge();
+    return;
+  }
   if (e.target.classList.contains("kved-yes")) {
     const t = S.tx[e.target.closest("tr").dataset.id];
     // підтвердження стосується всіх платежів з таким самим призначенням (відрізняються лише номери й дати)
