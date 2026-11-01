@@ -57,6 +57,17 @@
   .taxes-list .budget-table td.num { white-space: nowrap; }
   .taxes-list tr.tax-start td { font-style: italic; color: var(--muted, #888); border-top: 2px solid rgba(127,127,127,.3); }
   #taxes-year { width: auto; margin-left: 4px; }
+  .chart-head { flex-wrap: wrap; gap: 8px; }
+  .chart-ctrl { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .chart-ctrl select, .chart-ctrl input { width: auto; font-size: 13px; padding: 4px 6px; }
+  .seg { display: inline-flex; border: 1px solid rgba(127,127,127,.35); border-radius: 8px; overflow: hidden; }
+  .seg button { border: 0; background: transparent; color: inherit; font: inherit; font-size: 13px; padding: 4px 10px; cursor: pointer; }
+  .seg button.active { background: var(--series-1, #2a78d6); color: #fff; }
+  .chart .line { fill: none; stroke: var(--series-1, #2a78d6); stroke-width: 1.6; stroke-linejoin: round; }
+  .chart .area { fill: var(--series-1, #2a78d6); opacity: .08; }
+  .chart .guide { stroke: rgba(127,127,127,.6); stroke-dasharray: 3 3; }
+  .chart .dot { fill: var(--series-1, #2a78d6); stroke: var(--card, #fff); stroke-width: 2; }
+  .chart .hit { fill: transparent; }
 </style>
 </head>
 <body>
@@ -112,7 +123,15 @@
         </div>
         <div class="grid-2">
           <div class="card">
-            <div class="card-head"><h3>Дохід по місяцях, грн</h3></div>
+            <div class="card-head chart-head"><h3>Дохід, грн</h3>
+              <div class="chart-ctrl">
+                <select id="ch-period" aria-label="Період графіка">
+                  <option value="year">Рік (як вгорі)</option><option value="12m">Останні 12 місяців</option><option value="all">Весь час</option><option value="custom">Довільний…</option>
+                </select>
+                <span id="ch-custom" class="hidden"><input type="date" id="ch-from" aria-label="З"> – <input type="date" id="ch-to" aria-label="По"></span>
+                <div class="seg" role="group" aria-label="Деталізація"><button type="button" data-mode="month" class="active">Помісячно</button><button type="button" data-mode="day">Поденно</button></div>
+              </div>
+            </div>
             <div id="chart" class="chart"></div>
           </div>
           <div class="card">

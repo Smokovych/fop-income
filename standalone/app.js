@@ -384,7 +384,7 @@ function loadOverview() {
   if (s.params.assumed) w = `Податкові параметри для ${state.year} року не задано — використано параметри попереднього року. Оновіть їх у «Налаштуваннях».`;
   warn.textContent = w; warn.classList.toggle("hidden", !w);
 
-  drawChart(s.months);
+  drawChart();
 
   const up = upcoming();
   $("#upcoming").innerHTML = up.length ? up.map((u) => `
@@ -414,37 +414,129 @@ function niceStep(raw) {
   return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10) * p;
 }
 
-function drawChart(months) {
+// ---------------------------------------------------------------- графік доходу: період і помісячно / поденно
+const CH = { period: "year", mode: "month" };
+function chartRange() {
+  const today = kyivDate(nowTs());
+  if (CH.period === "12m") { const d = new Date(Date.parse(today) - 364 * 864e5); return [isoD(new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1))), today]; }
+  if (CH.period === "all") {
+    const ds = Object.values(S.tx).filter((t) => S.accounts[t.account_id] && catOf(t) === "income").map((t) => t.date).sort();
+    return [ds.length ? ds[0].slice(0, 8) + "01" : `${state.year}-01-01`, today];
+  }
+  if (CH.period === "custom" && $("#ch-from").value && $("#ch-to").value) return [$("#ch-from").value, $("#ch-to").value].sort();
+  return [`${state.year}-01-01`, `${state.year}-12-31`];
+}
+// Дохід по днях (у копійках): дохід мінус повернення покупцям, як у підсумках
+function chartDays(from, to) {
+  const m = {};
+  for (const t of Object.values(S.tx)) {
+    if (!S.accounts[t.account_id] || t.date < from || t.date > to) continue;
+    const c = catOf(t);
+    if (c === "income") { const v = incomeUah(t); if (v != null) { const d = (m[t.date] = m[t.date] || { inc: 0, ref: 0, n: 0 }); d.inc += v; d.n++; } }
+    else if (c === "refund_to_buyer" && t.uah_amount != null) { const d = (m[t.date] = m[t.date] || { inc: 0, ref: 0, n: 0 }); d.ref += Math.abs(t.uah_amount); }
+  }
+  return m;
+}
+function drawChart() {
   const el = $("#chart");
-  const W = Math.max(320, el.clientWidth || 600), H = 260, padL = 52, padR = 8, padT = 16, padB = 26;
-  const vals = months.map((m) => Math.max(0, m.income - m.refunds));
-  const max = Math.max(...vals, 1), step = niceStep(max / 4), top = Math.ceil(max / step) * step;
-  const y = (v) => padT + (H - padT - padB) * (1 - v / top);
-  const colW = (W - padL - padR) / 12, barW = Math.min(36, colW * 0.6);
+  const [from, to] = chartRange();
+  const days = chartDays(from, to);
+  const W = Math.max(320, el.clientWidth || 600), H = 260, padL = 56, padR = 10, padT = 16, padB = 26;
   const axis = 'style="fill:var(--muted);font-size:11px"';
+  const MS = ["Січ", "Лют", "Бер", "Кві", "Тра", "Чер", "Лип", "Сер", "Вер", "Жов", "Лис", "Гру"];
+  const tip = $("#tooltip");
+  const showTip = (e, html) => {
+    tip.innerHTML = html; tip.classList.remove("hidden");
+    tip.style.left = Math.min(e.clientX + 12, innerWidth - tip.offsetWidth - 8) + "px";
+    tip.style.top = e.clientY + 12 + "px";
+  };
+  if (CH.mode === "month") {
+    // помісячно — стовпчики
+    const months = [];
+    for (let d = new Date(from.slice(0, 7) + "-01T00:00:00Z"); isoD(d) <= to; d = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1))) months.push({ key: isoD(d).slice(0, 7), inc: 0, ref: 0, n: 0 });
+    const idx = Object.fromEntries(months.map((m, i) => [m.key, i]));
+    for (const [d, v] of Object.entries(days)) { const m = months[idx[d.slice(0, 7)]]; if (m) { m.inc += v.inc; m.ref += v.ref; m.n += v.n; } }
+    const vals = months.map((m) => Math.max(0, m.inc - m.ref) / 100);
+    const max = Math.max(...vals, 1), step = niceStep(max / 4), top = Math.ceil(max / step) * step;
+    const y = (v) => padT + (H - padT - padB) * (1 - v / top);
+    const colW = (W - padL - padR) / Math.max(months.length, 1), barW = Math.max(2, Math.min(36, colW * 0.6));
+    const every = Math.ceil(months.length / Math.max(1, Math.floor((W - padL) / 42)));
+    let grid = "";
+    for (let v = 0; v <= top + 1e-9; v += step) grid += `<line x1="${padL}" x2="${W - padR}" y1="${y(v)}" y2="${y(v)}"/><text x="${padL - 8}" y="${y(v) + 4}" text-anchor="end" ${axis}>${moneyShort(v)}</text>`;
+    const multiYear = from.slice(0, 4) !== to.slice(0, 4);
+    const best = vals.indexOf(Math.max(...vals));
+    let lastY = null;   // рік додається до першого видимого підпису кожного року
+    const cols = months.map((m, i) => {
+      const v = vals[i], x = padL + colW * i + (colW - barW) / 2, h = Math.max(0, y(0) - y(v)), r = Math.min(4, h, barW / 2);
+      const path = h > 0 ? `M${x},${y(0)} V${y(v) + r} Q${x},${y(v)} ${x + r},${y(v)} H${x + barW - r} Q${x + barW},${y(v)} ${x + barW},${y(v) + r} V${y(0)} Z` : "";
+      const mi = +m.key.slice(5, 7) - 1, shown = i % every === 0;
+      const label = MS[mi] + (multiYear && shown && lastY !== m.key.slice(0, 4) ? " " + m.key.slice(2, 4) : "");
+      if (shown) lastY = m.key.slice(0, 4);
+      return `<g class="col" data-i="${i}"><rect class="bar-hit" x="${padL + colW * i}" y="${padT}" width="${colW}" height="${H - padT - padB}"/>
+        <path class="bar" d="${path}"/>${i === best && v > 0 && months.length <= 24 ? `<text class="val" x="${x + barW / 2}" y="${y(v) - 6}" text-anchor="middle">${moneyShort(v)}</text>` : ""}
+        ${i % every === 0 ? `<text x="${padL + colW * i + colW / 2}" y="${H - 8}" text-anchor="middle" ${axis}>${label}</text>` : ""}</g>`;
+    }).join("");
+    el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Дохід по місяцях"><g class="grid">${grid}</g>${cols}</svg>`;
+    $$("g.col", el).forEach((g) => {
+      const m = months[g.dataset.i];
+      g.addEventListener("mousemove", (e) => showTip(e, `<b>${MONTHS_NOM[+m.key.slice(5, 7) - 1]} ${m.key.slice(0, 4)}</b><br>Дохід: ${money(m.inc / 100)}${m.ref ? `<br>Повернення: ${money(-m.ref / 100)}` : ""}<br>Надходжень: ${m.n}`));
+      g.addEventListener("mouseleave", () => tip.classList.add("hidden"));
+    });
+    return;
+  }
+  // поденно — одна лінія, підказка з сумою за день під курсором
+  const list = [];
+  for (let t = Date.parse(from + "T00:00:00Z"), end = Date.parse(to + "T00:00:00Z"); t <= end; t += 864e5) {
+    const d = new Date(t).toISOString().slice(0, 10), v = days[d];
+    list.push({ d, v: v ? Math.max(0, v.inc - v.ref) / 100 : 0, raw: v });
+  }
+  const max = Math.max(...list.map((x) => x.v), 1), step = niceStep(max / 4), top = Math.ceil(max / step) * step;
+  const y = (v) => padT + (H - padT - padB) * (1 - v / top);
+  const x = (i) => padL + (W - padL - padR) * (list.length > 1 ? i / (list.length - 1) : 0.5);
   let grid = "";
   for (let v = 0; v <= top + 1e-9; v += step) grid += `<line x1="${padL}" x2="${W - padR}" y1="${y(v)}" y2="${y(v)}"/><text x="${padL - 8}" y="${y(v) + 4}" text-anchor="end" ${axis}>${moneyShort(v)}</text>`;
-  const best = vals.indexOf(Math.max(...vals));
-  const cols = months.map((m, i) => {
-    const v = vals[i], x = padL + colW * i + (colW - barW) / 2, h = Math.max(0, y(0) - y(v)), r = Math.min(4, h);
-    const path = h > 0 ? `M${x},${y(0)} V${y(v) + r} Q${x},${y(v)} ${x + r},${y(v)} H${x + barW - r} Q${x + barW},${y(v)} ${x + barW},${y(v) + r} V${y(0)} Z` : "";
-    return `<g class="col" data-i="${i}"><rect class="bar-hit" x="${padL + colW * i}" y="${padT}" width="${colW}" height="${H - padT - padB}"/>
-      <path class="bar" d="${path}"/>${i === best && v > 0 ? `<text class="val" x="${x + barW / 2}" y="${y(v) - 6}" text-anchor="middle">${moneyShort(v)}</text>` : ""}
-      <text x="${padL + colW * i + colW / 2}" y="${H - 8}" text-anchor="middle" ${axis}>${MONTHS[i]}</text></g>`;
+  // підписи: перше число кожного місяця (з проріджуванням)
+  const firsts = list.map((p, i) => [p, i]).filter(([p]) => p.d.endsWith("-01"));
+  const every = Math.ceil(firsts.length / Math.max(1, Math.floor((W - padL) / 42)));
+  const multiYear = from.slice(0, 4) !== to.slice(0, 4);
+  let lastY = null;
+  const labels = firsts.filter((_, k) => k % every === 0).map(([p, i]) => {
+    const mi = +p.d.slice(5, 7) - 1, yr = p.d.slice(0, 4), withY = multiYear && lastY !== yr; lastY = yr;
+    return `<text x="${x(i)}" y="${H - 8}" text-anchor="middle" ${axis}>${MS[mi]}${withY ? " " + yr.slice(2) : ""}</text>`;
   }).join("");
-  el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Дохід по місяцях"><g class="grid">${grid}</g>${cols}</svg>`;
-  const tip = $("#tooltip");
-  $$("g.col", el).forEach((g) => {
-    const m = months[g.dataset.i];
-    g.addEventListener("mousemove", (e) => {
-      tip.innerHTML = `<b>${MONTHS[m.month - 1]} ${state.year}</b><br>Дохід: ${money(m.income)}${m.refunds ? `<br>Повернення: ${money(-m.refunds)}` : ""}<br>Надходжень: ${m.count}`;
-      tip.classList.remove("hidden");
-      tip.style.left = Math.min(e.clientX + 12, innerWidth - tip.offsetWidth - 8) + "px";
-      tip.style.top = e.clientY + 12 + "px";
-    });
-    g.addEventListener("mouseleave", () => tip.classList.add("hidden"));
-  });
+  const pts = list.map((p, i) => `${x(i).toFixed(1)},${y(p.v).toFixed(1)}`);
+  el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Дохід по днях"><g class="grid">${grid}</g>
+    <path class="area" d="M${x(0)},${y(0)} L${pts.join(" L")} L${x(list.length - 1)},${y(0)} Z"/><path class="line" d="M${pts.join(" L")}"/>${labels}
+    <line class="guide hidden" x1="0" x2="0" y1="${padT}" y2="${H - padB}"/><circle class="dot hidden" r="4"/>
+    <rect class="hit" x="${padL}" y="${padT}" width="${W - padL - padR}" height="${H - padT - padB}"/></svg>`;
+  const svg = $("svg", el), guide = $(".guide", el), dot = $(".dot", el), hit = $(".hit", el);
+  const move = (e) => {
+    const r = svg.getBoundingClientRect(), px = (e.clientX - r.left) * (W / r.width);
+    const i = Math.max(0, Math.min(list.length - 1, Math.round((px - padL) / ((W - padL - padR) / Math.max(1, list.length - 1)))));
+    const p = list[i];
+    guide.setAttribute("x1", x(i)); guide.setAttribute("x2", x(i)); guide.classList.remove("hidden");
+    dot.setAttribute("cx", x(i)); dot.setAttribute("cy", y(p.v)); dot.classList.remove("hidden");
+    showTip(e, `<b>${fmtDate(p.d)}</b><br>Дохід: ${money(p.v)}${p.raw && p.raw.ref ? `<br>Повернення: ${money(-p.raw.ref / 100)}` : ""}${p.raw && p.raw.n ? `<br>Надходжень: ${p.raw.n}` : ""}`);
+  };
+  hit.addEventListener("mousemove", move);
+  hit.addEventListener("touchstart", (e) => move(e.touches[0]), { passive: true });
+  hit.addEventListener("touchmove", (e) => move(e.touches[0]), { passive: true });
+  hit.addEventListener("mouseleave", () => { tip.classList.add("hidden"); guide.classList.add("hidden"); dot.classList.add("hidden"); });
 }
+$("#ch-period").addEventListener("change", (e) => {
+  CH.period = e.target.value;
+  $("#ch-custom").classList.toggle("hidden", CH.period !== "custom");
+  if (CH.period === "custom" && !$("#ch-from").value) { $("#ch-from").value = `${state.year}-01-01`; $("#ch-to").value = kyivDate(nowTs()); }
+  drawChart();
+});
+["#ch-from", "#ch-to"].forEach((id) => $(id).addEventListener("change", drawChart));
+$(".chart-ctrl .seg").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-mode]");
+  if (!b) return;
+  CH.mode = b.dataset.mode;
+  $$(".chart-ctrl .seg button").forEach((x) => x.classList.toggle("active", x === b));
+  drawChart();
+});
 let resizeTimer;
 addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => { if (activeTab === "overview") loadOverview(); }, 200); });
 
