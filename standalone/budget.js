@@ -25,12 +25,15 @@ async function fetchBudget(auth, year) {
 }
 
 // ---------------------------------------------------------------- класифікація платежів
-const KBK_NAMES = {
-  "18050400": "Єдиний податок", "11011000": "Військовий збір", "71040000": "ЄСВ",
-  "11010100": "ПДФО", "11010400": "ПДФО", "11010500": "ПДФО (декларація)", "11011600": "Військовий збір",
-};
-// порядок: спершу податки ФОП, потім податки з найманих працівників, далі решта — за активністю
-const KBK_ORDER = ["18050400", "11011000", "11011600", "71040000", "11010100", "11010400", "11010500"];
+// Назви й порядок вкладок за кодом класифікації доходів бюджету: спершу податки ФОП, далі — з найманих працівників,
+// потім податок на нерухомість; решта — за активністю, з назвою з Кабінету.
+const KBK_LIST = [
+  ["18050400", "Єдиний податок ФОП"], ["11011700", "Військовий збір ФОП"], ["71040000", "ЄСВ ФОП"], ["11010500", "ПДФО ФОП"],
+  ["11011000", "Військовий збір ФОП"], ["11010100", "ПДФО працівники"], ["11011001", "Військовий збір працівники"],
+  ["71010000", "ЄСВ працівники"], ["18010200", "Податок на нерухомість"],
+];
+const KBK_NAMES = Object.fromEntries(KBK_LIST);
+const KBK_ORDER = KBK_LIST.map(([k]) => k);
 
 const kbkOf = (it) => (String(it.plat1 || "").replace(/\s+/g, " ").match(/\b(\d{8})\b/) || [])[1] || "";
 const num = (v) => (v == null || v === "" ? 0 : Number(String(v).replace(",", ".")) || 0);
@@ -45,10 +48,12 @@ function budgetTabs() {
   const tabs = items.slice().sort((a, c) => rank(a) - rank(c) || activity(c) - activity(a));
   const seen = {};
   return tabs.map((it) => {
-    const base = KBK_NAMES[kbkOf(it)] || String(it.namePlt || "Платіж").replace(/\s+/g, " ").trim();
+    const code = kbkOf(it);
+    const base = KBK_NAMES[code] || String(it.namePlt || "Платіж").replace(/\s+/g, " ").trim();
     seen[base] = (seen[base] || 0) + 1;
-    return { it, name: base, key: String(it.idpmnt || base) };
-  }).map((t, _, all) => (all.filter((x) => x.name === t.name).length > 1 ? { ...t, name: `${t.name} · ${String(t.it.nameSti || t.it.cSti || "").split(/[ (]/)[0] || t.key.slice(-4)}` } : t));
+    return { it, name: base, code, key: String(it.idpmnt || base) };
+  }).map((t, _, all) => (all.filter((x) => x.name === t.name && x.code === t.code).length > 1
+    ? { ...t, sti: String(t.it.nameSti || t.it.cSti || "").replace(/\s+/g, " ").trim() } : t));
 }
 
 // ---------------------------------------------------------------- QR НБУ
@@ -118,7 +123,7 @@ function loadTaxes() {
   if (!tabs.some((t) => t.key === taxesActive)) taxesActive = tabs[0].key;
   $("#taxes-tabs").innerHTML = tabs.map((t) => {
     const debt = num(t.it.nedoim0) > 0;
-    return `<button type="button" data-key="${esc(t.key)}" class="${t.key === taxesActive ? "active" : ""}">${esc(t.name)}${debt ? ' <span class="badge danger-badge" title="Є борг">!</span>' : ""}</button>`;
+    return `<button type="button" data-key="${esc(t.key)}" class="tax-tab ${t.key === taxesActive ? "active" : ""}" title="${esc(t.name + (t.code ? " · код " + t.code : "") + (t.sti ? " · " + t.sti : ""))}"><span class="tax-tab-name">${esc(t.name)}${debt ? ' <span class="badge danger-badge" title="Є борг">!</span>' : ""}</span><span class="tax-tab-code">${t.code ? esc(t.code) : ""}${t.sti ? " · " + esc(t.sti.slice(0, 28)) : ""}</span></button>`;
   }).join("");
   const t = tabs.find((x) => x.key === taxesActive), it = t.it, n = t.name;
   const debt = num(it.nedoim0), over = num(it.perepl0), penalty = num(it.sldpn0) || num(it.penia0);
