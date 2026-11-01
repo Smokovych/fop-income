@@ -43,10 +43,16 @@
   .book-table .book-edit { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
   .book-table select.book-col { width: auto; font-size: 12px; padding: 2px 6px; }
   .book-table .book-tag { color: #b7791f; }
-  #taxes-tabs .tax-tab { display: inline-flex; flex-direction: column; align-items: flex-start; line-height: 1.2; text-align: left; max-width: 340px; }
-  #taxes-tabs .tax-tab-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
-  #taxes-tabs .tax-tab-code { font-size: 11px; opacity: .7; }
-  #taxes-tabs .tax-tab-code:empty { display: none; }
+  .taxes-list tr.tax-row { cursor: pointer; }
+  .taxes-list tr.tax-row:hover td, .taxes-list tr.tax-row.open td { background: rgba(42,120,214,.08); }
+  .taxes-list tr.tax-row td:first-child { white-space: normal; }
+  .taxes-list .tax-name { font-weight: 600; }
+  .taxes-list .caret { display: inline-block; width: 1.2em; color: var(--muted, #888); }
+  .taxes-list .tax-code { margin-left: 1.2em; }
+  .taxes-list td.num { white-space: nowrap; width: 1%; }
+  .taxes-list tr.tax-detail > td { padding: 12px 12px 16px; background: rgba(127,127,127,.05); }
+  .taxes-list tfoot td { font-weight: 600; border-top: 2px solid rgba(127,127,127,.35); }
+  .taxes-list .neg { color: #dc2626; } .taxes-list .pos { color: #16a34a; }
 </style>
 </head>
 <body>
