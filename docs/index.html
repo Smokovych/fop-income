@@ -369,6 +369,8 @@ p.small.warn { padding: 8px 12px; }
 .raw-data { margin-top: 12px; }
 .raw-data summary { cursor: pointer; color: var(--text-2); }
 .raw-data pre { max-height: 420px; overflow: auto; background: var(--surface-2); padding: 10px; border-radius: 8px; font: 12px/1.45 ui-monospace, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.badge.badge-red { background: #dc2626; color: #fff; margin-left: 4px; }
   .ai-log { position: relative; display: flex; flex-direction: column; gap: 10px; height: 380px; overflow-y: auto; overscroll-behavior: contain; margin: 8px 0; padding: 8px; border: 1px solid rgba(127,127,127,.25); border-radius: 10px; }
   .ai-log:empty::before { content: "Оберіть запитання вище або напишіть своє — відповідь з'явиться тут."; color: rgba(127,127,127,.9); margin: auto; text-align: center; padding: 0 16px; }
   @media (max-width: 640px) { .ai-log { height: 55vh; } }
@@ -423,7 +425,7 @@ p.small.warn { padding: 8px 12px; }
       <div class="brand"><span class="logo">₴</span> ФОП-дохід</div>
       <nav class="tabs" id="tabs">
         <button data-tab="overview" class="active">Огляд</button>
-        <button data-tab="transactions">Операції <span class="badge" id="review-badge" title="Надходження, що чекають підтвердження" hidden></span></button>
+        <button data-tab="transactions">Операції <span class="badge" id="review-badge" title="Надходження, що чекають підтвердження, що це дохід" hidden></span><span class="badge badge-red" id="kved-badge" title="Надходження, для яких треба підтвердити відповідність КВЕДу" hidden></span></button>
         <button data-tab="taxes">Податки</button>
         <button data-tab="banks">Банки</button>
         <button data-tab="account">Облікові дані</button>
@@ -3972,13 +3974,15 @@ function reviewInfo(t) {
 const needsReview = (t) => !!reviewInfo(t);
 function pendingReviewCount() {
   let n = 0;
-  const kv = typeof kvedInfo === "function" ? kvedInfo : () => false;
-  for (const t of Object.values(S.tx)) if (needsReview(t) || kv(t)) n++;
+  for (const t of Object.values(S.tx)) if (needsReview(t)) n++;
   return n;
 }
 function updateReviewBadge() {
   const n = pendingReviewCount(), b = $("#review-badge");
   if (b) { b.textContent = n; b.hidden = !n; }
+  // червоний лічильник — доходи, для яких треба підтвердити відповідність КВЕДу (лише в інтерфейсі)
+  const kb = $("#kved-badge");
+  if (kb && typeof kvedInfo === "function") { const k = Object.values(S.tx).filter(kvedInfo).length; kb.textContent = k; kb.hidden = !k; }
   return n;
 }
 // Комісія еквайрингу (у валюті рахунку, копійки): ручна має пріоритет над знайденою в призначенні

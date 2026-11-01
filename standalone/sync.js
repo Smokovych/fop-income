@@ -297,13 +297,15 @@ function reviewInfo(t) {
 const needsReview = (t) => !!reviewInfo(t);
 function pendingReviewCount() {
   let n = 0;
-  const kv = typeof kvedInfo === "function" ? kvedInfo : () => false;
-  for (const t of Object.values(S.tx)) if (needsReview(t) || kv(t)) n++;
+  for (const t of Object.values(S.tx)) if (needsReview(t)) n++;
   return n;
 }
 function updateReviewBadge() {
   const n = pendingReviewCount(), b = $("#review-badge");
   if (b) { b.textContent = n; b.hidden = !n; }
+  // червоний лічильник — доходи, для яких треба підтвердити відповідність КВЕДу (лише в інтерфейсі)
+  const kb = $("#kved-badge");
+  if (kb && typeof kvedInfo === "function") { const k = Object.values(S.tx).filter(kvedInfo).length; kb.textContent = k; kb.hidden = !k; }
   return n;
 }
 // Комісія еквайрингу (у валюті рахунку, копійки): ручна має пріоритет над знайденою в призначенні
