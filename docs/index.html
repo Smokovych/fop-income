@@ -6021,13 +6021,31 @@ function bookEntry(t) {
     const got = Math.round(t.amount * t.nbu_rate);
     if (acc.type === "cash") e.cash = got; else e.bank = got;
     e.com = inc - got;
-  } else if (t.amount > 0 && acc.is_fop && (c === "own_transfer" || BOOK_TRANSIT.has(c))) {
+  } else if (t.amount > 0 && acc.is_fop && c === "own_transfer") {
+    // «Власні кошти» — лише перекази з рахунку чи картки фізичної особи; між рахунками ФОП — не в книзі
+    if (ownFromFop(t)) return null;
     if (uah == null) return "missing";
-    e.bank = uah;
-    if (c === "own_transfer") e.own = uah; else e.transit = uah;
-  } else return null;   // у книгу — лише надходження; списання (в т.ч. повернення покупцям) не враховуються
+    e.bank = e.own = Math.abs(uah);
+  } else if (t.amount > 0 && acc.is_fop && BOOK_TRANSIT.has(c)) {
+    if (uah == null) return "missing";
+    e.bank = e.transit = Math.abs(uah);
+  } else if (t.amount < 0 && c === "refund_to_buyer") {
+    // повернення покупцям/контрагентам — у колонку 5 без мінуса (зменшує дохід)
+    if (uah == null) return "missing";
+    e.ref = Math.abs(uah);
+  } else return null;
   e.inc = e.cash + e.bank + e.com - e.ref - e.transit - e.own;
   return e;
+}
+// Переказ надійшов з іншого рахунку ФОП (а не з особистого рахунку чи картки)? Балансовий рахунок у IBAN:
+// 2600/2603/2604/2605 — рахунки підприємців; 2620/2625/2630 — фізичних осіб; 29xx — транзитні (перекази з карток).
+function ownFromFop(t) {
+  const ib = String(t.counter_iban || "").replace(/\s/g, "").toUpperCase();
+  if (!ib) return false;   // напр. «З чорної картки» у Monobank — без IBAN, з особистої картки
+  const known = Object.values(S.accounts).find((a) => a.iban && a.iban.toUpperCase() === ib);
+  if (known) return !!known.is_fop;
+  const m = ib.match(/^UA\d{8}0*(\d{4})/);
+  return !!m && /^260[0345]$/.test(m[1]);
 }
 const bookSum = (list) => { const r = { cash: 0, bank: 0, com: 0, ref: 0, transit: 0, own: 0, inc: 0 }; for (const e of list) for (const k in r) r[k] += e[k]; return r; };
 function bookData(year) {
