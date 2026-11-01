@@ -142,28 +142,35 @@ function loadTaxes() {
 }
 
 function taxDetail(t) {
-  const it = t.it, n = t.name;
+  const it = t.it;
   const debt = num(it.nedoim0), over = num(it.perepl0), penalty = num(it.sldpn0) || num(it.penia0);
-  const ops = opRows(it).slice().sort((a, c) => parseDdmm(c.dateoper) - parseDdmm(a.dateoper));
+  // Виписка по рахунку платника: кожна операція змінює баланс на (сплачено/повернуто − нараховано).
+  // Баланс на кінець = переплата − борг; від нього рахуємо назад баланс після кожної операції і залишок на початок року.
+  const ops = opRows(it).map((o, i) => ({ o, i, d: parseDdmm(o.dateoper), delta: num(o.splpov0) - num(o.narah0) }))
+    .sort((a, c) => a.d - c.d || a.i - c.i);
+  const end = over - debt;
+  let bal = end - ops.reduce((a, x) => a + x.delta, 0);
+  const start = bal;
+  for (const x of ops) { bal += x.delta; x.bal = bal; }
+  const balCell = (v) => `<span class="${v < -0.004 ? "neg" : v > 0.004 ? "pos" : ""}">${v < -0.004 ? "−" : ""}${money(Math.abs(v))}</span><div class="muted small">${v < -0.004 ? "борг" : v > 0.004 ? "переплата" : ""}</div>`;
+  const year = (S.tax.budget && S.tax.budget.year) || new Date().getFullYear();
+  const rows = ops.slice().reverse().map((x) => `<tr><td class="td-date">${esc(x.o.dateoper)}</td>
+      <td><div>${esc(x.o.namevid || x.o.vidpa || "")}</div>${x.o.templ && x.o.templ.trim() ? `<div class="muted small">${esc(x.o.templ.trim())}</div>` : ""}</td>
+      <td class="num" data-label="Зараховано">${x.delta > 0.004 ? `<span class="pos">+${money(x.delta)}</span>` : ""}</td>
+      <td class="num" data-label="Списано">${x.delta < -0.004 ? `<span class="neg">−${money(-x.delta)}</span>` : ""}</td>
+      <td class="num" data-label="Баланс">${balCell(x.bal)}</td></tr>`).join("");
   return `
-    <div class="kpis kpis-3">
-      <div class="kpi"><div class="label">Сплачено «${esc(n)}»</div><div class="value">${money(num(it.splbd0))}</div>${num(it.povbd0) ? `<div class="sub">повернуто з бюджету: ${money(num(it.povbd0))}</div>` : ""}</div>
-      <div class="kpi"><div class="label">Списано «${esc(n)}»</div><div class="value">${money(num(it.narah0))}</div><div class="sub">нараховано до сплати</div></div>
-      <div class="kpi ${debt > 0 ? "kpi-bad" : "kpi-good"}"><div class="label">Борг по «${esc(n)}»</div><div class="value">${money(Math.max(debt, 0))}</div>
-        <div class="sub">${over > 0 ? `переплата: ${money(over)}` : debt > 0 ? "є заборгованість" : "заборгованості немає"}${penalty ? ` · пеня: ${money(penalty)}` : ""}</div></div>
-    </div>
+    <div class="tax-balance">Баланс рахунку: <b>${balCell(end).replace(/<div[^>]*>.*<\/div>/, "")}</b> <span class="muted">${end < -0.004 ? "— борг" : end > 0.004 ? "— переплата" : "— розрахунки закрито"}</span>${penalty ? ` · пеня: ${money(penalty)}` : ""}
+      <span class="muted small">· нараховано за рік ${money(num(it.narah0))} · сплачено ${money(num(it.splbd0))}${num(it.povbd0) ? ` · повернуто ${money(num(it.povbd0))}` : ""}</span></div>
     <div class="conn-actions taxes-actions">
       <button class="btn" type="button" id="btn-tax-req">Реквізити</button>
       <a class="btn primary" id="btn-tax-pay" href="${esc(nbuQrLink(paymentDetails(it, debt > 0 ? debt : 0)))}" target="_blank" rel="noopener">Сплатити</a>
       <span class="muted small">${esc(it.nameSti || "")}</span>
     </div>
     <div class="table-wrap"><table class="table budget-table">
-      <thead><tr><th>Дата</th><th>Операція</th><th class="num">Списано</th><th class="num">Сплачено / повернуто</th></tr></thead>
-      <tbody>${ops.map((o) => `<tr><td class="td-date">${esc(o.dateoper)}</td>
-        <td><div>${esc(o.namevid || o.vidpa || "")}</div>${o.templ && o.templ.trim() ? `<div class="muted small">${esc(o.templ.trim())}</div>` : ""}</td>
-        <td class="num" data-label="Списано">${num(o.narah0) ? money(num(o.narah0)) : ""}</td>
-        <td class="num" data-label="Сплачено / повернуто">${num(o.splpov0) ? `<span class="pos">${money(num(o.splpov0))}</span>` : ""}</td></tr>`).join("")
-        || `<tr><td colspan="4" class="muted">${it.opsError ? "Не вдалося завантажити операції: " + esc(it.opsError) : "Операцій за рік немає"}</td></tr>`}</tbody></table></div>
+      <thead><tr><th>Дата</th><th>Операція</th><th class="num">Зараховано</th><th class="num">Списано</th><th class="num">Баланс</th></tr></thead>
+      <tbody>${rows || `<tr><td colspan="5" class="muted">${it.opsError ? "Не вдалося завантажити операції: " + esc(it.opsError) : "Операцій за рік немає"}</td></tr>`}
+        <tr class="tax-start"><td class="td-date">01.01.${year}</td><td>Залишок на початок року</td><td></td><td></td><td class="num" data-label="Баланс">${balCell(start)}</td></tr></tbody></table></div>
     <details class="raw-data"><summary>Дані з Кабінету як є (для перевірки)</summary>
       <p class="muted small">Відповідь API «Стан розрахунків з бюджетом» по цьому платежу: спершу підсумок (ta/splatp), далі операції (…/pa).</p>
       <div class="conn-actions"><button class="btn small" type="button" id="btn-raw-copy">Скопіювати</button><button class="btn small" type="button" id="btn-raw-all">Завантажити все (JSON)</button></div>
