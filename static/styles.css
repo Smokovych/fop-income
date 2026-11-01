@@ -222,6 +222,11 @@ form.card.form-grid { display: grid; }
 /* операції, що чекають підтвердження */
 .tx-table tr.needs-review > td { background: var(--warn-bg); }
 .tx-table tr.needs-review > td:first-child { box-shadow: inset 4px 0 0 var(--warn); }
+.tx-table tr.kved-review > td { background: rgba(220, 38, 38, .10); }
+.tx-table tr.kved-review > td:first-child { box-shadow: inset 4px 0 0 #dc2626; }
+.kved-box { margin-top: 8px; display: grid; gap: 6px; max-width: 260px; }
+.kved-box b, .kved-note { color: #dc2626; }
+.kved-note { display: inline-block; margin-left: 6px; padding: 2px 8px; border-radius: 8px; background: rgba(220, 38, 38, .10); }
 .review-box { margin-top: 8px; display: grid; gap: 6px; max-width: 260px; }
 .review-box b { color: var(--warn); }
 .review-actions { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -267,7 +272,11 @@ form.card.form-grid { display: grid; }
   .tx-table td.comm-cell .muted.small { display: none; }
   .tx-table td.td-cat { grid-area: cat; margin-top: 8px; }
   .tx-table td.td-cat select { max-width: none; width: calc(100% - 40px); }
-  .tx-table tr:not(.needs-review) td.td-cat > .muted.small { display: none; }
+  .tx-table tr:not(.needs-review):not(.kved-review) td.td-cat > .muted.small { display: none; }
+  .tx-table tr.kved-review > td { background: none; }
+  .tx-table tr.kved-review { background: rgba(220, 38, 38, .10); box-shadow: inset 4px 0 0 #dc2626; }
+  .tx-table tr.kved-review > td:first-child { box-shadow: none; }
+  .kved-box { max-width: none; }
   .tx-table tr.needs-review > td { background: none; }
   .tx-table tr.needs-review { background: var(--warn-bg); box-shadow: inset 4px 0 0 var(--warn); }
   .tx-table tr.needs-review > td:first-child { box-shadow: none; }

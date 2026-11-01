@@ -197,6 +197,15 @@ def api_ai_ask(h, m, body):
         raise HttpError(e.status, str(e))
 
 
+@route("POST", "/api/ai/kved")
+def api_ai_kved(h, m, body):
+    body = body or {}
+    try:
+        return {"results": ai.kved_check(body.get("kveds"), body.get("items"))}
+    except ai.AiError as e:
+        raise HttpError(e.status, str(e))
+
+
 @route("POST", "/proxy/tax-bridge")
 def px_tax(h, m, body):
     return proxy.tax_bridge(body or {})

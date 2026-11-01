@@ -272,3 +272,42 @@ def ask(question, history=None):
             results.append({"type": "tool_result", "tool_use_id": c["id"], "content": out[:60000], "is_error": err})
         messages.append({"role": "user", "content": results})
     raise AiError(504, "Аналіз вийшов задовгим — уточніть запитання")
+
+
+# ---------------------------------------------------------------- відповідність призначень платежу КВЕДам
+def kved_check(kveds, items):
+    """kveds: ["62.01 Комп'ютерне програмування", …]; items: [{"id", "text"}] — призначення платежів (доходи).
+    Повертає [{"id", "ok", "kved", "reason"}]: ok=False — оплата, схоже, за діяльність, якої немає серед КВЕДів."""
+    if not enabled():
+        raise AiError(503, "ШІ не налаштовано: додайте змінну ANTHROPIC_API_KEY у налаштуваннях сервера")
+    kveds = [str(k)[:200] for k in (kveds or [])][:60]
+    items = [{"id": str(i.get("id"))[:40], "text": str(i.get("text") or "")[:300]} for i in (items or []) if isinstance(i, dict)][:80]
+    if not kveds or not items:
+        return []
+    lines = "\n".join(f"{n}. {i['text']}" for n, i in enumerate(items, 1))
+    prompt = (
+        "Ти — бухгалтер ФОП в Україні. Ось КВЕДи, зареєстровані у ФОП:\n" + "\n".join("- " + k for k in kveds) +
+        "\n\nНижче — призначення платежів, які ФОП отримав як дохід. Для кожного визнач, чи вид діяльності, за який заплатили, "
+        "охоплюється хоча б одним із цих КВЕДів (з урахуванням змісту класу КВЕД, а не лише назви).\n"
+        "Правила: якщо призначення не розкриває вид діяльності (\"оплата за рахунком №…\", \"переказ коштів\", \"згідно договору\", "
+        "\"поповнення\", ім'я платника, порожньо) — ok=true. Якщо вид діяльності зрозумілий і жоден КВЕД його не охоплює — ok=false, "
+        "у kved вкажи код КВЕД-2010, який для цього потрібен, а в reason — коротко (до 12 слів) за що оплата.\n"
+        "Відповідай ЛИШЕ JSON-масивом без пояснень: [{\"n\":1,\"ok\":true},{\"n\":2,\"ok\":false,\"kved\":\"73.11\",\"reason\":\"рекламні послуги\"}]\n\n"
+        + lines)
+    r = _call({"model": MODEL, "max_tokens": 4000, "messages": [{"role": "user", "content": prompt}]})
+    text = "".join(c.get("text", "") for c in r.get("content") or [] if c.get("type") == "text")
+    a, b = text.find("["), text.rfind("]")
+    try:
+        arr = json.loads(text[a:b + 1]) if a >= 0 and b > a else []
+    except ValueError:
+        raise AiError(502, "ШІ повернув відповідь у незнайомому форматі") from None
+    out = []
+    for x in arr:
+        try:
+            n = int(x.get("n")) - 1
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if 0 <= n < len(items):
+            out.append({"id": items[n]["id"], "ok": bool(x.get("ok", True)), "kved": str(x.get("kved") or "")[:10],
+                        "reason": str(x.get("reason") or "")[:120]})
+    return out

@@ -39,3 +39,17 @@ class AiToolsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class KvedCheckTest(unittest.TestCase):
+    def test_parse(self):
+        import os
+        os.environ["ANTHROPIC_API_KEY"] = "k"
+        orig = ai._call
+        ai._call = lambda payload: {"content": [{"type": "text", "text": 'Ось: [{"n":1,"ok":true},{"n":2,"ok":false,"kved":"73.11","reason":"реклама"}]'}]}
+        try:
+            r = ai.kved_check(["69.20 Бухоблік"], [{"id": "a", "text": "консультація"}, {"id": "b", "text": "рекламні послуги"}])
+        finally:
+            ai._call = orig
+            os.environ.pop("ANTHROPIC_API_KEY", None)
+        self.assertEqual([(x["id"], x["ok"], x["kved"]) for x in r], [("a", True, ""), ("b", False, "73.11")])

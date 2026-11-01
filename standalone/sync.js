@@ -297,7 +297,8 @@ function reviewInfo(t) {
 const needsReview = (t) => !!reviewInfo(t);
 function pendingReviewCount() {
   let n = 0;
-  for (const t of Object.values(S.tx)) if (needsReview(t)) n++;
+  const kv = typeof kvedInfo === "function" ? kvedInfo : () => false;
+  for (const t of Object.values(S.tx)) if (needsReview(t) || kv(t)) n++;
   return n;
 }
 function updateReviewBadge() {

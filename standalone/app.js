@@ -458,6 +458,69 @@ function sourceOf(acc) {
   return "file";
 }
 
+// ---------------------------------------------------------------- відповідність доходів КВЕДам (перевіряє ШІ на сервері)
+// Призначення платежу зводиться до «ключа» (цифри → #), щоб однакові платежі перевірялись один раз. Результат —
+// у S.kvedChecks[ключ] разом з підписом списку КВЕДів: якщо КВЕДи змінились, перевірка повториться.
+const KV = { running: false, failed: false, done: 0, total: 0 };
+function fopKveds() {
+  return (taxSummary().kved || []).map((k) => {
+    const code = k.code || ((k.raw || []).map(([, v]) => String(v)).find((v) => /^\d{2}\.\d{2}$/.test(v)));
+    const name = k.name || ((k.raw || []).map(([, v]) => String(v)).find((v) => /[а-яіїє]{4}/i.test(v)) || "");
+    return code ? `${code} ${name}`.trim() : null;
+  }).filter(Boolean);
+}
+const kvedSig = () => hash(fopKveds().sort().join("|"));
+const kvedKey = (t) => { const d = norm(t.description || "").replace(/\d+/g, "#").replace(/\s+/g, " ").trim().slice(0, 160); return d.length >= 4 ? hash(d) : null; };
+function kvedInfo(t) {
+  if (t.kved_ok || t.amount <= 0 || catOf(t) !== "income") return null;
+  const k = kvedKey(t), r = k && S.kvedChecks && S.kvedChecks[k];
+  return r && r.ok === false && r.sig === kvedSig() ? r : null;
+}
+async function runKvedCheck() {
+  if (!SERVER_MODE || KV.running || KV.failed) return;
+  const kveds = fopKveds();
+  if (!kveds.length) return;
+  const sig = kvedSig();
+  S.kvedChecks = S.kvedChecks || {};
+  const todo = new Map();
+  for (const t of Object.values(S.tx)) {
+    if (t.amount <= 0 || catOf(t) !== "income" || !S.accounts[t.account_id]) continue;
+    const k = kvedKey(t);
+    if (!k || todo.has(k)) continue;
+    const r = S.kvedChecks[k];
+    if (!r || r.sig !== sig) todo.set(k, String(t.description).slice(0, 300));
+  }
+  if (!todo.size) return;
+  const st = await api("GET", "/api/ai/status").catch(() => null);
+  if (!st || !st.ok || !st.data.enabled) { KV.failed = true; return; }
+  KV.running = true; KV.done = 0; KV.total = todo.size;
+  const list = [...todo.entries()];
+  try {
+    for (let i = 0; i < list.length; i += 60) {
+      const part = list.slice(i, i + 60);
+      const res = await api("POST", "/api/ai/kved", JSON.stringify({ kveds, items: part.map(([id, text]) => ({ id, text })) }));
+      if (!res.ok) throw new Error(res.data.error || "HTTP " + res.status);
+      const got = new Map(res.data.results.map((r) => [r.id, r]));
+      for (const [id] of part) {
+        const r = got.get(id) || { ok: true };
+        S.kvedChecks[id] = { ok: r.ok !== false, kved: r.kved || "", reason: r.reason || "", sig };
+      }
+      KV.done += part.length;
+      save();
+      if (activeTab === "transactions") loadTransactions("keep");
+    }
+    const n = Object.values(S.tx).filter(kvedInfo).length;
+    if (n) log("info", `Перевірка КВЕДів: ${n} надходжень можуть не відповідати зареєстрованим КВЕДам`);
+  } catch (e) {
+    KV.failed = true;
+    log("warn", "Перевірка КВЕДів: " + e.message);
+  } finally {
+    KV.running = false;
+    if (activeTab === "transactions") loadTransactions("keep");
+    updateReviewBadge();
+  }
+}
+
 function filteredTx() {
   const f = { from: $("#f-from").value, to: $("#f-to").value, acc: $("#f-account").value, src: $("#f-source").value, cat: $("#f-category").value, dir: $("#f-direction").value, q: norm($("#f-q").value) };
   return Object.values(S.tx).filter((t) => S.accounts[t.account_id]
@@ -465,8 +528,8 @@ function filteredTx() {
     && (!f.src || sourceOf(S.accounts[t.account_id]) === f.src)
     && (!f.cat || (f.cat === "__review" ? needsReview(t) : catOf(t) === f.cat)) && (f.dir !== "in" || t.amount > 0) && (f.dir !== "out" || t.amount < 0)
     && (!f.q || norm([t.description, t.counter_name, t.comment, t.note].join(" ")).includes(f.q)))
-    .map((t) => [needsReview(t), t])
-    .sort(([ra, a], [rb, b]) => (rb - ra) || (b.ts - a.ts)) // спершу ті, що чекають підтвердження
+    .map((t) => [kvedInfo(t) ? 2 : needsReview(t) ? 1 : 0, t])
+    .sort(([ra, a], [rb, b]) => (rb - ra) || (b.ts - a.ts)) // спершу КВЕД під питанням (червоні), далі — що чекають підтвердження
     .map(([, t]) => t);
 }
 
@@ -483,15 +546,18 @@ function loadTransactions(reset) {
   const inc = all.filter((t) => catOf(t) === "income");
   const income = inc.reduce((a, t) => a + (incomeUah(t) || 0), 0);
   const comm = inc.reduce((a, t) => a + Math.round(commissionOf(t) * (t.nbu_rate || 1)), 0);
-  const pending = all.filter(needsReview).length;
+  const pending = all.filter(needsReview).length, kvN = all.filter(kvedInfo).length;
   $("#tx-summary").innerHTML = esc(`Знайдено операцій: ${all.length}. Дохід серед них: ${money(income / 100)}` + (comm ? `, у т.ч. комісія еквайрингу ${money(comm / 100)}` : ""))
-    + (pending ? ` <span class="review-note">Чекають підтвердження: <b>${pending}</b> — вони вгорі списку й підсвічені жовтим.</span>` : "");
+    + (pending ? ` <span class="review-note">Чекають підтвердження: <b>${pending}</b> — вони вгорі списку й підсвічені жовтим.</span>` : "")
+    + (kvN ? ` <span class="kved-note">Перевірте КВЕД: <b>${kvN}</b> — підсвічені червоним, на самому верху.</span>` : "")
+    + (KV.running ? ` <span class="muted small">Звіряю призначення з КВЕДами… ${KV.done} з ${KV.total}</span>` : "");
   updateReviewBadge();
   const rows = all.slice(0, state.txShown).map(txRow).join("");
   $("#tx-table").innerHTML = `<thead><tr><th>Дата</th><th>Контрагент / призначення</th><th>Рахунок</th><th class="num">Надійшло / списано</th><th class="num" title="Комісія еквайрингу, утримана банком. Береться з призначення платежу; клацніть, щоб змінити">Комісія</th><th class="num" title="Надійшло + комісія, у гривні за курсом НБУ. Ця сума йде в Книгу обліку доходів і декларацію">Дохід, грн</th><th>Категорія</th></tr></thead>
     <tbody>${rows || `<tr><td colspan="7" class="muted">Операцій немає</td></tr>`}</tbody>`;
   $("#btn-more").classList.toggle("hidden", state.txShown >= all.length);
   if (!$("#history-panel").classList.contains("hidden")) renderHistory();
+  runKvedCheck();   // нові доходи звіряються з КВЕДами у фоні (лише на сервері з ключем ШІ)
 }
 
 function commCell(t) {
@@ -509,7 +575,10 @@ function txRow(t) {
   const noLabel = t.amount < 0 ? "Ні, звичайна витрата" : "Не дохід";
   const review = rv ? `<div class="review-box"><div class="small"><b>Потрібне підтвердження.</b> ${esc(rv.reason)}.</div>
       <div class="review-actions"><button class="btn small review-yes">${yesLabel}</button><button class="btn small review-no">${noLabel}</button></div></div>` : "";
-  return `<tr data-id="${esc(t.id)}"${rv ? ` class="needs-review"` : ""}>
+  const kv = kvedInfo(t);
+  const kvBox = kv ? `<div class="kved-box"><div class="small"><b>Можливо, немає КВЕДу.</b> ${esc(kv.reason || "Оплата за вид діяльності, якого немає серед ваших КВЕДів")}${kv.kved ? ` — потрібен КВЕД ${esc(kv.kved)}` : ""}.</div>
+      <div class="review-actions"><button class="btn small kved-yes">Відповідає КВЕДу</button></div></div>` : "";
+  return `<tr data-id="${esc(t.id)}"${kv ? ` class="kved-review"` : rv ? ` class="needs-review"` : ""}>
     <td class="td-date">${fmtDate(t.date)}<div class="muted small">${time}${t.hold ? " · в обробці" : ""}</div></td>
     <td class="desc"><div class="cp">${esc(t.counter_name || t.description)}</div><div class="sub">${esc(t.counter_name ? t.description : "")}${t.comment ? " · " + esc(t.comment) : ""}</div></td>
     <td class="small td-acc">${esc(S.accounts[t.account_id].name)}</td>
@@ -518,7 +587,7 @@ function txRow(t) {
     <td class="num td-inc${c === "income" && incomeUah(t) != null ? "" : " no-inc"}">${c === "income" && incomeUah(t) != null ? `<b>${nf.format(incomeUah(t) / 100)}</b>` : `<span class="muted">—</span>`}${t.currency !== "UAH" && t.nbu_rate ? `<div class="muted small">курс ${t.nbu_rate}</div>` : ""}</td>
     <td class="td-cat"><select class="cat ${t.manual_category ? "manual" : ""}" title="${esc(t.manual_category ? "Змінено вручну" : "Авто: " + (t.auto_reason || ""))}">${opts}</select>
       ${t.manual_category ? `<button class="btn ghost small reset" title="Повернути автоматичну категорію">↺</button>` : ""}
-      <div class="muted small">${t.manual_category ? "вручну" : esc(t.auto_reason || "")}</div>${review}</td></tr>`;
+      <div class="muted small">${t.manual_category ? "вручну" : esc(t.auto_reason || "")}</div>${kvBox}${review}</td></tr>`;
 }
 
 $("#tx-table").addEventListener("change", (e) => {
@@ -542,6 +611,15 @@ function resolveReview(t, isIncome) {
 }
 
 $("#tx-table").addEventListener("click", (e) => {
+  if (e.target.classList.contains("kved-yes")) {
+    const t = S.tx[e.target.closest("tr").dataset.id];
+    // підтвердження стосується всіх платежів з таким самим призначенням (відрізняються лише номери й дати)
+    const k = kvedKey(t), same = Object.values(S.tx).filter((x) => x !== t && kvedInfo(x) && kvedKey(x) === k).length;
+    t.kved_ok = true;
+    if (k && S.kvedChecks[k]) S.kvedChecks[k].ok = true;
+    save(true); toast("Підтверджено: платіж відповідає КВЕДу" + (same ? ` (і ще ${same} з таким самим призначенням)` : "")); loadTransactions("keep"); updateReviewBadge();
+    return;
+  }
   if (e.target.classList.contains("review-yes") || e.target.classList.contains("review-no")) {
     return resolveReview(S.tx[e.target.closest("tr").dataset.id], e.target.classList.contains("review-yes"));
   }
