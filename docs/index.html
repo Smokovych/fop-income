@@ -491,7 +491,7 @@ p.small.warn { padding: 8px 12px; }
             <div class="card-head chart-head"><h3>Дохід, грн</h3>
               <div class="chart-ctrl">
                 <select id="ch-period" aria-label="Період графіка">
-                  <option value="year">Рік (як вгорі)</option><option value="12m">Останні 12 місяців</option><option value="all">Весь час</option><option value="custom">Довільний…</option>
+
                 </select>
                 <span id="ch-custom" class="hidden"><input type="date" id="ch-from" aria-label="З"> – <input type="date" id="ch-to" aria-label="По"></span>
                 <div class="seg" role="group" aria-label="Деталізація"><button type="button" data-mode="month" class="active">Помісячно</button><button type="button" data-mode="day">Поденно</button></div>
@@ -5680,15 +5680,25 @@ function niceStep(raw) {
 
 // ---------------------------------------------------------------- графік доходу: період і помісячно / поденно
 const CH = { period: "year", mode: "month" };
+// список періодів: кожен рік з даними окремо, далі 12 місяців, весь час, довільний
+function renderChartPeriods() {
+  const years = [...new Set([new Date().getFullYear(), ...Object.values(S.tx).map((t) => +t.date.slice(0, 4))])].sort((a, b) => b - a);
+  const cur = CH.period === "year" ? "y" + state.year : CH.period;
+  $("#ch-period").innerHTML = years.map((y) => `<option value="y${y}">${y} рік</option>`).join("")
+    + `<option value="12m">Останні 12 місяців</option><option value="all">Весь час</option><option value="custom">Довільний…</option>`;
+  $("#ch-period").value = [...$("#ch-period").options].some((o) => o.value === cur) ? cur : "y" + years[0];
+}
 function chartRange() {
   const today = kyivDate(nowTs());
+  if (/^y\d{4}$/.test(CH.period)) { const y = CH.period.slice(1); return [`${y}-01-01`, `${y}-12-31` < today ? `${y}-12-31` : today]; }
   if (CH.period === "12m") { const d = new Date(Date.parse(today) - 364 * 864e5); return [isoD(new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1))), today]; }
   if (CH.period === "all") {
     const ds = Object.values(S.tx).filter((t) => S.accounts[t.account_id] && catOf(t) === "income").map((t) => t.date).sort();
     return [ds.length ? ds[0].slice(0, 8) + "01" : `${state.year}-01-01`, today];
   }
   if (CH.period === "custom" && $("#ch-from").value && $("#ch-to").value) return [$("#ch-from").value, $("#ch-to").value].sort();
-  return [`${state.year}-01-01`, `${state.year}-12-31`];
+  const y = state.year;   // типово — рік, вибраний угорі «Огляду»
+  return [`${y}-01-01`, `${y}-12-31` < today ? `${y}-12-31` : today];
 }
 // Дохід по днях (у копійках): дохід мінус повернення покупцям, як у підсумках
 function chartDays(from, to) {
@@ -5703,6 +5713,7 @@ function chartDays(from, to) {
 }
 function drawChart() {
   const el = $("#chart");
+  renderChartPeriods();
   const [from, to] = chartRange();
   const days = chartDays(from, to);
   const W = Math.max(320, el.clientWidth || 600), H = 260, padL = 56, padR = 10, padT = 16, padB = 26;
