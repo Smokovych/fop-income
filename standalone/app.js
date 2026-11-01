@@ -890,10 +890,7 @@ function bookEntry(t) {
     if (uah == null) return "missing";
     e.bank = uah;
     if (c === "own_transfer") e.own = uah; else e.transit = uah;
-  } else if (c === "refund_to_buyer") {
-    if (uah == null) return "missing";
-    e.ref = Math.abs(uah);
-  } else return null;
+  } else return null;   // у книгу — лише надходження; списання (в т.ч. повернення покупцям) не враховуються
   e.inc = e.cash + e.bank + e.com - e.ref - e.transit - e.own;
   return e;
 }
@@ -999,7 +996,7 @@ function renderBook() {
   $("#book-head").innerHTML = `ФОП <b>${esc(name || "— вкажіть ПІБ у Налаштуваннях")}</b>${tin ? ", РНОКПП " + esc(tin) : ""} · ЄП ${fopGroup()} група ${String(p.single_tax_rate ?? 5).replace(".", ",")}% · ${BOOK.year} рік`
     + (missing ? ` · <span class="error">${missing} операцій без курсу НБУ не враховано</span>` : "");
   const rows = [];
-  const total = (label, list) => rows.push(`<tr class="book-total"><td>${label}</td>${bookCells(bookSum(list))}</tr>`);
+  const total = (label, list, cls) => rows.push(`<tr class="book-total ${cls}"><td>${label}</td>${bookCells(bookSum(list))}</tr>`);
   const qList = [];
   for (let q = 0; q < 4; q++) {
     const qEntries = [];
@@ -1021,10 +1018,10 @@ function renderBook() {
       }
     }
     qList.push(qEntries);
-    total(`${q + 1} квартал`, qEntries);
-    if (q === 1) total("1-ше півріччя", [...qList[0], ...qList[1]]);
-    if (q === 2) total("9 місяців", [...qList[0], ...qList[1], ...qList[2]]);
-    if (q === 3) total(`Рік`, entries);
+    total(`${q + 1} квартал`, qEntries, "book-q");
+    if (q === 1) total("1-ше півріччя", [...qList[0], ...qList[1]], "book-cum");
+    if (q === 2) total("9 місяців", [...qList[0], ...qList[1], ...qList[2]], "book-cum");
+    if (q === 3) total(`Рік`, entries, "book-year");
   }
   $("#book-body").innerHTML = rows.join("");
 }
