@@ -6,9 +6,10 @@
   <meta name="fop-mode" content="local">
   <title>ФОП-дохід</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232a78d6'/%3E%3Ctext x='16' y='22' font-size='17' text-anchor='middle' fill='white' font-family='sans-serif' font-weight='700'%3E₴%3C/text%3E%3C/svg%3E">
-  <style>/*CSS*/  .ai-log { display: flex; flex-direction: column; gap: 10px; max-height: 60vh; overflow: auto; margin: 8px 0; }
-  .ai-log:empty { display: none; }
-  .ai-msg { padding: 10px 12px; border-radius: 10px; line-height: 1.45; overflow-x: auto; }
+  <style>/*CSS*/  .ai-log { position: relative; display: flex; flex-direction: column; gap: 10px; height: 380px; overflow-y: auto; overscroll-behavior: contain; margin: 8px 0; padding: 8px; border: 1px solid rgba(127,127,127,.25); border-radius: 10px; }
+  .ai-log:empty::before { content: "Оберіть запитання вище або напишіть своє — відповідь з'явиться тут."; color: rgba(127,127,127,.9); margin: auto; text-align: center; padding: 0 16px; }
+  @media (max-width: 640px) { .ai-log { height: 55vh; } }
+  .ai-msg { flex-shrink: 0; padding: 10px 12px; border-radius: 10px; line-height: 1.45; overflow-x: auto; }
   .ai-msg.q { align-self: flex-end; background: rgba(42,120,214,.14); max-width: 85%; white-space: pre-wrap; }
   .ai-msg.a { background: var(--bg-soft, rgba(127,127,127,.08)); }
   .ai-msg.a table { border-collapse: collapse; margin: 6px 0; font-size: .92em; }
