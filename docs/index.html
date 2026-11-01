@@ -393,6 +393,10 @@ p.small.warn { padding: 8px 12px; }
   .book-table tr.book-cum td { background: rgba(127,127,127,.14); }
   .book-table tr.book-year td { background: rgba(42,120,214,.28); border-top: 2px solid rgba(42,120,214,.8); font-size: 1.05em; }
   .book-table td.book-inc { font-weight: 600; }
+  .book-table tr.book-excl td { opacity: .65; }
+  .book-table .book-edit { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .book-table select.book-col { width: auto; font-size: 12px; padding: 2px 6px; }
+  .book-table .book-tag { color: #b7791f; }
 </style>
 </head>
 <body>
@@ -496,7 +500,8 @@ p.small.warn { padding: 8px 12px; }
             </div>
           </div>
           <p class="muted small" id="book-head"></p>
-          <p class="muted small">Натисніть на місяць, щоб побачити дні, а на день — операції, з яких складається сума.</p>
+          <p class="muted small">Натисніть на місяць, щоб побачити дні, а на день — операції, з яких складається сума. Графу для операції можна змінити у списку під нею.</p>
+          <label class="small"><input type="checkbox" id="book-all"> Показувати надходження, не включені в книгу (перекази між рахунками ФОП, продаж валюти, повернення з бюджету) — щоб додати їх</label>
           <div class="table-wrap"><table class="table book-table">
             <thead><tr><th>Місяць</th><th class="num">Готівка<br><span class="muted small">2</span></th><th class="num">Безготівка<br><span class="muted small">3</span></th><th class="num">Комісія<br><span class="muted small">4</span></th><th class="num">Повернення<br><span class="muted small">5</span></th><th class="num">Транзитні кошти<br><span class="muted small">6</span></th><th class="num">Власні кошти<br><span class="muted small">7</span></th><th class="num">Дохід (ЄП)<br><span class="muted small">8 = 2+3+4−5−6−7</span></th></tr></thead>
             <tbody id="book-body"></tbody>
@@ -6008,32 +6013,43 @@ $("#btn-more").addEventListener("click", () => { state.txShown += 200; loadTrans
 // 5 — повернення покупцям, 6 — транзитні кошти (позики, повернення помилкових платежів, інше — не дохід),
 // 7 — власні кошти (перекази між своїми рахунками). Кол. 8 = 2 + 3 + 4 − 5 − 6 − 7 — дохід, що оподатковується ЄП.
 // Гривня від продажу валюти в книгу не потрапляє зовсім: дохід — це сама валюта на дату зарахування за курсом НБУ.
-const BOOK_TRANSIT = new Set(["loan", "refund_in", "tax_refund", "other_non_income"]);
+const BOOK_TRANSIT = new Set(["loan", "refund_in", "other_non_income"]);   // повернення податків — не в книзі
 // Кожна операція, що потрапляє в книгу, — запис із сумами по колонках (у копійках); місяці й дні — суми записів
 const BOOK_KEYS = ["cash", "bank", "com", "ref", "transit", "own"];
-function bookEntry(t) {
+// Платіж за реквізитами бюджету («*;107;РНОКПП;…») — повернення податку чи помилково сплаченого до бюджету
+const isBudgetPayment = (t) => /^\s*\*;\d{3};/.test(t.description || "");
+// Графи книги для ручного вибору. Вибір зберігається в операції (book_col) і має перевагу над автоматикою.
+const BOOK_COLS = { income: "Дохід (кол. 3 / 2)", ref: "Повернення (кол. 5)", transit: "Транзитні кошти (кол. 6)", own: "Власні кошти (кол. 7)", exclude: "Не включати в книгу" };
+// Повертає запис книги, null (не в книзі) або "missing" (немає курсу). all = також не включені надходження (з нулями).
+function bookEntry(t, all) {
   const acc = S.accounts[t.account_id], c = catOf(t);
   const uah = t.uah_amount != null ? t.uah_amount : t.currency === "UAH" ? t.amount : null;
-  const e = { t, cash: 0, bank: 0, com: 0, ref: 0, transit: 0, own: 0 };
-  if (t.amount > 0 && c === "income") {
+  const e = { t, cash: 0, bank: 0, com: 0, ref: 0, transit: 0, own: 0, inc: 0, col: null, manual: !!t.book_col };
+  const skip = (why) => (all && (t.amount > 0 && acc.is_fop || t.book_col) ? Object.assign(e, { col: "exclude", why }) : null);
+  let col = t.book_col;
+  if (!col) {
+    if (t.amount > 0 && c === "income") col = "income";
+    else if (t.amount > 0 && acc.is_fop && isBudgetPayment(t)) return skip("повернення з бюджету");
+    else if (t.amount > 0 && acc.is_fop && c === "own_transfer") col = ownFromFop(t) ? null : "own";
+    else if (t.amount > 0 && acc.is_fop && BOOK_TRANSIT.has(c)) col = "transit";
+    else if (t.amount < 0 && c === "refund_to_buyer") col = "ref";
+    if (!col) return skip(c === "own_transfer" ? "переказ між рахунками ФОП" : c === "currency_exchange" ? "продаж/купівля валюти" : c === "tax_refund" ? "повернення податку" : "не надходження ФОП");
+  }
+  if (col === "exclude") return skip("виключено вручну");
+  e.col = col;
+  if (col === "income") {
+    if (t.amount <= 0) return skip("списання не може бути доходом");
     const inc = incomeUah(t);
     if (inc == null) return "missing";
     const got = Math.round(t.amount * t.nbu_rate);
     if (acc.type === "cash") e.cash = got; else e.bank = got;
     e.com = inc - got;
-  } else if (t.amount > 0 && acc.is_fop && c === "own_transfer") {
-    // «Власні кошти» — лише перекази з рахунку чи картки фізичної особи; між рахунками ФОП — не в книзі
-    if (ownFromFop(t)) return null;
+  } else {
     if (uah == null) return "missing";
-    e.bank = e.own = Math.abs(uah);
-  } else if (t.amount > 0 && acc.is_fop && BOOK_TRANSIT.has(c)) {
-    if (uah == null) return "missing";
-    e.bank = e.transit = Math.abs(uah);
-  } else if (t.amount < 0 && c === "refund_to_buyer") {
-    // повернення покупцям/контрагентам — у колонку 5 без мінуса (зменшує дохід)
-    if (uah == null) return "missing";
-    e.ref = Math.abs(uah);
-  } else return null;
+    const v = Math.abs(uah);
+    if (col === "ref") e.ref = v;
+    else { e.bank = v; e[col] = v; }
+  }
   e.inc = e.cash + e.bank + e.com - e.ref - e.transit - e.own;
   return e;
 }
@@ -6048,17 +6064,17 @@ function ownFromFop(t) {
   return !!m && /^260[0345]$/.test(m[1]);
 }
 const bookSum = (list) => { const r = { cash: 0, bank: 0, com: 0, ref: 0, transit: 0, own: 0, inc: 0 }; for (const e of list) for (const k in r) r[k] += e[k]; return r; };
-function bookData(year) {
+function bookData(year, all) {
   const entries = [];
   let missing = 0;
   for (const t of Object.values(S.tx)) {
     if (!S.accounts[t.account_id] || !t.date.startsWith(year + "-")) continue;
-    const e = bookEntry(t);
+    const e = bookEntry(t, all);
     if (e === "missing") missing++; else if (e) entries.push(e);
   }
   entries.sort((a, b) => a.t.ts - b.t.ts);
   const months = Array.from({ length: 12 }, (_, i) => bookSum(entries.filter((e) => +e.t.date.slice(5, 7) === i + 1)));
-  return { months, entries, missing };
+  return { months, entries: all ? entries : entries.filter((e) => e.col !== "exclude"), missing };
 }
 
 function fopGroup() {
@@ -6143,7 +6159,7 @@ function renderBook() {
   const years = [...new Set([new Date().getFullYear(), ...Object.values(S.tx).map((t) => +t.date.slice(0, 4))])].sort((a, b) => b - a);
   if (!BOOK.year) BOOK.year = $("#f-period").value === "year" ? +$("#f-period-year").value : +String($("#f-from").value || state.year).slice(0, 4);
   $("#book-year").innerHTML = years.map((y) => `<option ${y === BOOK.year ? "selected" : ""}>${y}</option>`).join("");
-  const { months, entries, missing } = bookData(BOOK.year);
+  const { months, entries, missing } = bookData(BOOK.year, BOOK.all);
   const ts = taxSummary(), p = taxParams(BOOK.year);
   const name = (S.settings.owner_name || String(ts.name || "").replace(/^ФОП\s+/i, "")).trim(), tin = String(S.settings.owner_tax_id || ts.tin || "");
   $("#book-head").innerHTML = `ФОП <b>${esc(name || "— вкажіть ПІБ у Налаштуваннях")}</b>${tin ? ", РНОКПП " + esc(tin) : ""} · ЄП ${fopGroup()} група ${String(p.single_tax_rate ?? 5).replace(".", ",")}% · ${BOOK.year} рік`
@@ -6166,7 +6182,8 @@ function renderBook() {
         rows.push(`<tr class="book-day clickable${dOpen ? " open" : ""}" data-d="${d}"><td><span class="caret">${dOpen ? "▾" : "▸"}</span>${fmtDate(d)} <span class="muted small">(${de.length})</span></td>${bookCells(bookSum(de))}</tr>`);
         if (dOpen) for (const e of de) {
           const t = e.t, acc = S.accounts[t.account_id];
-          rows.push(`<tr class="book-op"><td><div>${esc(t.counter_name || "—")}</div><div class="muted small">${esc(new Date(t.ts * 1000).toLocaleTimeString("uk-UA", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Kyiv" }))} · ${esc(CATEGORIES[catOf(t)] || "")} · ${esc(acc.name)}${t.currency !== "UAH" ? ` · ${nf.format(Math.abs(t.amount) / 100)} ${esc(t.currency)} × ${t.nbu_rate}` : ""}</div><div class="muted small book-desc">${esc(t.description || "")}</div></td>${bookCells(e, "small")}</tr>`);
+          const sel = `<select class="book-col" data-tx="${esc(t.id)}" aria-label="Графа книги"><option value="">${e.manual ? "Автоматично" : "Графа: автоматично"}</option>${Object.entries(BOOK_COLS).map(([k, l]) => `<option value="${k}" ${e.manual && t.book_col === k ? "selected" : ""}>${l}</option>`).join("")}</select>`;
+          rows.push(`<tr class="book-op${e.col === "exclude" ? " book-excl" : ""}${e.manual ? " book-manual" : ""}"><td><div>${esc(t.counter_name || "—")} <span class="muted small">${t.amount > 0 ? "+" : "−"}${nf.format(Math.abs(t.amount) / 100)} ${esc(t.currency)}</span></div><div class="muted small">${esc(new Date(t.ts * 1000).toLocaleTimeString("uk-UA", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Kyiv" }))} · ${esc(CATEGORIES[catOf(t)] || "")} · ${esc(acc.name)}${t.currency !== "UAH" ? ` · ${nf.format(Math.abs(t.amount) / 100)} ${esc(t.currency)} × ${t.nbu_rate}` : ""}</div><div class="muted small book-desc">${esc(t.description || "")}</div><div class="book-edit">${e.col === "exclude" ? `<span class="muted small">не в книзі: ${esc(e.why || "")}</span> ` : ""}${sel}${e.manual ? ' <span class="small book-tag">змінено вручну</span>' : ""}</div></td>${bookCells(e, "small")}</tr>`);
         }
       }
     }
@@ -6185,7 +6202,31 @@ $("#btn-export").addEventListener("click", (e) => {
   if (!p.classList.contains("hidden")) { renderBook(); p.scrollIntoView({ behavior: "smooth", block: "start" }); }
 });
 $("#book-year").addEventListener("change", () => { BOOK.year = +$("#book-year").value; BOOK.openM.clear(); BOOK.openD.clear(); renderBook(); });
+$("#book-all").addEventListener("change", (e) => { BOOK.all = e.target.checked; renderBook(); });
+$("#book-body").addEventListener("change", (e) => {
+  const sel = e.target.closest("select.book-col");
+  if (!sel) return;
+  const t = S.tx[sel.dataset.tx];
+  if (!t) return;
+  const v = sel.value;
+  // перший ручний вибір запам'ятовує категорію операції, щоб «Автоматично» могло її повернути
+  if (v && !t.book_col) t.book_prev_cat = t.manual_category ?? null;
+  if (v) t.book_col = v;
+  else {
+    delete t.book_col;
+    if ("book_prev_cat" in t) { if (t.book_prev_cat == null) t.manual_category = null; else t.manual_category = t.book_prev_cat; delete t.book_prev_cat; }
+  }
+  // щоб податки й Огляд рахувались так само, як книга, — відповідна категорія операції
+  const cat = { income: "income", ref: "refund_to_buyer", own: "own_transfer", transit: "other_non_income" }[v];
+  if (cat) t.manual_category = cat;
+  if (v === "exclude" && catOf(t) === "income") t.manual_category = "other_non_income";   // не в книзі — отже й не дохід
+  log("info", `Книга обліку: ${fmtDate(t.date)} ${t.counter_name || ""} ${nf.format(t.amount / 100)} → ${v ? BOOK_COLS[v] : "автоматично"}`);
+  save(true);
+  renderBook();
+  toast(v ? `Операцію перенесено: ${BOOK_COLS[v]}` : "Графу визначатиме програма");
+});
 $("#book-body").addEventListener("click", (e) => {
+  if (e.target.closest("select, option")) return;
   const tr = e.target.closest("tr.clickable");
   if (!tr) return;
   if (tr.dataset.m != null) { const m = +tr.dataset.m; BOOK.openM.has(m) ? BOOK.openM.delete(m) : BOOK.openM.add(m); }

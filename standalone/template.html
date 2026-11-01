@@ -39,6 +39,10 @@
   .book-table tr.book-cum td { background: rgba(127,127,127,.14); }
   .book-table tr.book-year td { background: rgba(42,120,214,.28); border-top: 2px solid rgba(42,120,214,.8); font-size: 1.05em; }
   .book-table td.book-inc { font-weight: 600; }
+  .book-table tr.book-excl td { opacity: .65; }
+  .book-table .book-edit { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .book-table select.book-col { width: auto; font-size: 12px; padding: 2px 6px; }
+  .book-table .book-tag { color: #b7791f; }
 </style>
 </head>
 <body>
@@ -142,7 +146,8 @@
             </div>
           </div>
           <p class="muted small" id="book-head"></p>
-          <p class="muted small">Натисніть на місяць, щоб побачити дні, а на день — операції, з яких складається сума.</p>
+          <p class="muted small">Натисніть на місяць, щоб побачити дні, а на день — операції, з яких складається сума. Графу для операції можна змінити у списку під нею.</p>
+          <label class="small"><input type="checkbox" id="book-all"> Показувати надходження, не включені в книгу (перекази між рахунками ФОП, продаж валюти, повернення з бюджету) — щоб додати їх</label>
           <div class="table-wrap"><table class="table book-table">
             <thead><tr><th>Місяць</th><th class="num">Готівка<br><span class="muted small">2</span></th><th class="num">Безготівка<br><span class="muted small">3</span></th><th class="num">Комісія<br><span class="muted small">4</span></th><th class="num">Повернення<br><span class="muted small">5</span></th><th class="num">Транзитні кошти<br><span class="muted small">6</span></th><th class="num">Власні кошти<br><span class="muted small">7</span></th><th class="num">Дохід (ЄП)<br><span class="muted small">8 = 2+3+4−5−6−7</span></th></tr></thead>
             <tbody id="book-body"></tbody>
