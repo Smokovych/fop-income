@@ -464,7 +464,11 @@ class T7_Background(unittest.TestCase):
         self.assertEqual(set(mock_banks.FS_LOG), {"Objects", "Shifts", "Documents", "CheckExt"})
         # повторно — закриті зміни не перечитуються, чеки не дублюються
         mock_banks.FS_LOG.clear()
-        self.bg.fiscal_sync()
+        loaded_to = self.store.get()["state"]["fiscal"]["registrars"]["4000123456"]["loaded_to"]
+        st = self.store.get()["state"]   # свіже оновлення через межу місяця (сервер приймає лише один місяць)
+        st["fiscal"]["registrars"]["4000123456"]["loaded_to"] = loaded_to[:8] + "01"
+        self.store.put(st, self.store.get()["version"], device="test")
+        self.assertIsNone(self.bg.fiscal_sync()["error"])
         self.assertNotIn("CheckExt", mock_banks.FS_LOG)
         self.assertEqual(len(self.store.get()["state"]["fiscal"]["checks"]), 4)
         self.bg.kep_delete()

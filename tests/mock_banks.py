@@ -155,6 +155,8 @@ def _fs_cmd(cmd):
                                 "TransactionsRegistrars": [{"NumFiscal": 4000123456, "NumLocal": 1, "Name": "Каса 1", "Closed": False}]}]}
     if c == "Shifts":
         frm, to = cmd["From"][:10], cmd["To"][:10]
+        if frm[:7] != to[:7]:   # як справжній сервер: лише в межах одного місяця
+            return {"ErrorCode": 11, "ErrorMessage": "Запит дозволяється в межах одного місяця"}
         sh = [{"ShiftId": 501, "OpenShiftFiscalNum": 1000, "Opened": f"{YEAR}-10-05T08:00:00+03:00", "Closed": f"{YEAR}-10-05T20:00:00+03:00", "OpenName": "Шевченко М."},
               {"ShiftId": 401, "OpenShiftFiscalNum": 2000, "Opened": f"{YEAR}-09-12T08:00:00+03:00", "Closed": f"{YEAR}-09-12T20:00:00+03:00", "OpenName": "Шевченко М."}]
         return {"Shifts": [x for x in sh if frm <= x["Opened"][:10] <= to]}

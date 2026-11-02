@@ -206,8 +206,29 @@ async function fiscalSync(ctx, F, S, key, api, req) {
   return Object.values(FS.registrars).some((r) => r.loaded_from > startIso);
 }
 
+// Зміщення Києва для дати (взимку +02:00, влітку +03:00) — щоб період не виходив за межі місяця
+function kyivOffset(iso) {
+  try {
+    const s = new Intl.DateTimeFormat("en-US", { timeZone: "Europe/Kyiv", timeZoneName: "longOffset" }).formatToParts(new Date(iso + "T12:00:00Z")).find((p) => p.type === "timeZoneName").value;
+    const m = s.match(/([+-]\d{2}):?(\d{2})/);
+    return m ? `${m[1]}:${m[2]}` : "+02:00";
+  } catch (e) { return "+02:00"; }
+}
+
+// Фіскальний сервер приймає запит змін лише в межах одного календарного місяця — ділимо період по місяцях
 async function fiscalWindow(ctx, F, FS, key, api, reg, from, to, onNew, timeUp) {
-  const sh = await fiscalCmd(ctx, key, api, { Command: "Shifts", NumFiscal: reg.id, From: from + "T00:00:00+03:00", To: to + "T23:59:59+02:00" });
+  for (let a = from; a <= to;) {
+    const d = new Date(a + "T00:00:00Z");
+    const monthEnd = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).toISOString().slice(0, 10);
+    const b = monthEnd < to ? monthEnd : to;
+    if (!(await fiscalMonth(ctx, F, FS, key, api, reg, a, b, onNew, timeUp))) return false;
+    a = new Date(Date.parse(b + "T00:00:00Z") + 864e5).toISOString().slice(0, 10);
+  }
+  return true;
+}
+
+async function fiscalMonth(ctx, F, FS, key, api, reg, from, to, onNew, timeUp) {
+  const sh = await fiscalCmd(ctx, key, api, { Command: "Shifts", NumFiscal: reg.id, From: `${from}T00:00:00${kyivOffset(from)}`, To: `${to}T23:59:59${kyivOffset(to)}` });
   for (const s of (sh && sh.Shifts) || []) {
     if (timeUp()) return false;
     const sid = String(s.ShiftId);
