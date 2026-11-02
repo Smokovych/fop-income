@@ -128,6 +128,47 @@ BUDGET_OPS = {
 }
 
 
+# ---- фіскальний сервер ПРРО: каса 4000123456, дві зміни, чеки продажу й повернення
+FS_LOG = []
+
+def _check_xml(fn, date, time_, items, pays, ret=False):
+    body = "".join(f"<ROW ROWNUM=\"{i+1}\"><NAME>{n}</NAME><UNITNM>шт</UNITNM><AMOUNT>{q}</AMOUNT><PRICE>{p:.2f}</PRICE><COST>{q*p:.2f}</COST></ROW>" for i, (n, q, p) in enumerate(items))
+    pay = "".join(f"<ROW ROWNUM=\"{i+1}\"><PAYFORMCD>{c}</PAYFORMCD><PAYFORMNM>{n}</PAYFORMNM><SUM>{v:.2f}</SUM></ROW>" for i, (c, n, v) in enumerate(pays))
+    total = sum(q * p for _, q, p in items)
+    x = (f'<?xml version="1.0" encoding="windows-1251"?><CHECK><CHECKHEAD><DOCTYPE>0</DOCTYPE><DOCSUBTYPE>{1 if ret else 0}</DOCSUBTYPE>'
+         f'<TIN>1234567890</TIN><ORGNM>ФОП Шевченко</ORGNM><POINTNM>Кав\'ярня "Ранок"</POINTNM><ORDERDATE>{date}</ORDERDATE><ORDERTIME>{time_}</ORDERTIME>'
+         f'<CASHIER>Шевченко М.</CASHIER><ORDERTAXNUM>{fn}</ORDERTAXNUM></CHECKHEAD><CHECKTOTAL><SUM>{total:.2f}</SUM></CHECKTOTAL>'
+         f'<CHECKPAY>{pay}</CHECKPAY><CHECKBODY>{body}</CHECKBODY></CHECK>')
+    return x.encode("cp1251")
+
+FS_CHECKS = {
+    "1001": _check_xml("1001", f"0510{YEAR}", "093000", [("Кава лате", 2, 65.0), ("Круасан", 1, 55.5)], [(0, "Готівка", 185.5)]),
+    "1002": _check_xml("1002", f"0510{YEAR}", "121500", [("Чай", 1, 40.0)], [(1, "Картка", 40.0)]),
+    "1003": _check_xml("1003", f"0510{YEAR}", "130000", [("Чай", 1, 40.0)], [(1, "Картка", 40.0)], ret=True),
+    "2001": _check_xml("2001", f"1209{YEAR}", "101000", [("Капучино", 3, 60.0)], [(1, "Картка", 180.0)]),
+}
+
+def _fs_cmd(cmd):
+    c = cmd.get("Command")
+    if c == "Objects":
+        return {"TaxObjects": [{"Name": "Кав'ярня «Ранок»", "Address": "м. Київ, вул. Хрещатик, 1", "OrgName": "ФОП Шевченко",
+                                "TransactionsRegistrars": [{"NumFiscal": 4000123456, "NumLocal": 1, "Name": "Каса 1", "Closed": False}]}]}
+    if c == "Shifts":
+        frm, to = cmd["From"][:10], cmd["To"][:10]
+        sh = [{"ShiftId": 501, "OpenShiftFiscalNum": 1000, "Opened": f"{YEAR}-10-05T08:00:00+03:00", "Closed": f"{YEAR}-10-05T20:00:00+03:00", "OpenName": "Шевченко М."},
+              {"ShiftId": 401, "OpenShiftFiscalNum": 2000, "Opened": f"{YEAR}-09-12T08:00:00+03:00", "Closed": f"{YEAR}-09-12T20:00:00+03:00", "OpenName": "Шевченко М."}]
+        return {"Shifts": [x for x in sh if frm <= x["Opened"][:10] <= to]}
+    if c == "Documents":
+        docs = {"501": [("1001", "SaleGoods"), ("1002", "SaleGoods"), ("1003", "ReturnGoods")], "401": [("2001", "SaleGoods")]}[str(cmd["ShiftId"])]
+        return {"Documents": [{"NumFiscal": fn, "NumLocal": i + 1, "DocClass": "Check", "CheckDocType": t, "Revoked": False, "Storned": False,
+                               "DocDateTime": "x"} for i, (fn, t) in enumerate(docs)] + [{"NumFiscal": "Z1", "DocClass": "ZRep"}]}
+    if c == "CheckExt":
+        x = FS_CHECKS.get(str(cmd["NumFiscal"]))
+        import base64 as _b
+        return {"Data": _b.b64encode(x).decode(), "ResultCode": 0, "CabinetUrl": f"https://cabinet.tax.gov.ua/cashregs/check?id={cmd['NumFiscal']}"} if x else None
+    return {"ErrorCode": 9, "ErrorMessage": "Невідома команда"}
+
+
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -149,6 +190,26 @@ class H(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self):
+        if self.path.startswith("/fs/cmd"):
+            n = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(n)
+            if self.headers.get("Content-Type") != "application/octet-stream":
+                return self._json({"error": "ct"}, 415)
+            a = raw.find(b'{"Command"')
+            if a < 0:
+                return self._json({"ErrorCode": 1, "ErrorMessage": "Повідомлення повинно бути засвідчене КЕП"})
+            depth, b = 0, a
+            for i in range(a, len(raw)):
+                depth += {123: 1, 125: -1}.get(raw[i], 0)
+                if depth == 0:
+                    b = i + 1
+                    break
+            cmd = json.loads(raw[a:b].decode("utf-8"))
+            FS_LOG.append(cmd["Command"])
+            out = _fs_cmd(cmd)
+            if out is None:
+                self.send_response(204); self.end_headers(); return
+            return self._json(out)
         if self.path.startswith("/mono/personal/webhook"):
             return self._json({"status": "ok"})
         if self.path == "/cmp":  # імітація CMP надавача: повертає тіло з CMP_RESPONSE (якщо задано)

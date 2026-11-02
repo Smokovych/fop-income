@@ -54,7 +54,7 @@ def kep_secret():
 
 def api_config():
     return {"mono": config.MONO_API, "nbu": config.NBU_API, "privat": config.PRIVAT_API, "tax": config.TAX_API,
-            "cmpTest": config.CMP_TEST_URL or "", "monoInterval": int(config.MONO_MIN_INTERVAL_SEC * 1000),
+            "cmpTest": config.CMP_TEST_URL or "", "fiscal": config.FISCAL_API, "monoInterval": int(config.MONO_MIN_INTERVAL_SEC * 1000),
             "maxRunMs": int(os.environ.get("SYNC_MAX_RUN_SEC", "480")) * 1000}
 
 
@@ -225,6 +225,28 @@ def tax_budget(year):
         status["running"] = None
 
 
+FISCAL_REFRESH_SEC = 6 * 3600
+
+
+@_locked
+def fiscal_sync():
+    """Фіскальні чеки ПРРО з фіскального сервера ДПС (вкладка «Фіскальні чеки»). Повертає {"more", "error"}."""
+    r = db.q1("SELECT blob FROM kep_store WHERE id=1")
+    if not r:
+        raise WorkerError("Ключ КЕП не збережено на сервері — збережіть його на вкладці «Облікові дані»")
+    state = store.get()["state"]
+    if not state:
+        raise WorkerError("Немає даних програми")
+    status["running"] = "fiscal"
+    try:
+        out = run_node({"cmd": "fiscal", "state": state, "blob": r["blob"], "secret": kep_secret()}, timeout=1200)
+        apply_result(state, out["state"])
+        f = out["state"].get("fiscal") or {}
+        return {"more": bool(out.get("more")), "error": f.get("error")}
+    finally:
+        status["running"] = None
+
+
 # ---------------------------------------------------------------- планувальник
 def _loop():
     time.sleep(90)  # дати серверу запуститися
@@ -247,7 +269,34 @@ def _loop():
             print("Оновлення облікових даних:", e)
         except Exception:
             traceback.print_exc()
+        try:
+            # фіскальні чеки — лише якщо їх уже вмикали на вкладці (є знайдені ПРРО)
+            f = (store.get()["state"] or {}).get("fiscal") or {}
+            if f.get("registrars") and kep_get()["stored"] and (f.get("more") or time.time() - (f.get("fetched_at") or 0) > FISCAL_REFRESH_SEC):
+                res = fiscal_sync()
+                if res.get("more"):
+                    status["next_at"] = min(status["next_at"], int(time.time()) + 60)
+        except WorkerError as e:
+            print("Фіскальні чеки:", e)
+        except Exception:
+            traceback.print_exc()
         time.sleep(max(60, status["next_at"] - time.time()))
+
+
+def start_fiscal():
+    """Ручне оновлення чеків: частини одна за одною, поки є що довантажувати (і далі — фоновий цикл)."""
+    def run():
+        for _ in range(30):
+            try:
+                if not fiscal_sync().get("more"):
+                    break
+            except WorkerError as e:
+                print("Фіскальні чеки:", e)
+                break
+            except Exception:
+                traceback.print_exc()
+                break
+    threading.Thread(target=run, name="fiscal", daemon=True).start()
 
 
 def start():

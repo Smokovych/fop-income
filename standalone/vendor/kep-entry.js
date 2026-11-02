@@ -113,15 +113,27 @@ export function openKey(keyFiles, password) {
       }
       return { ok: false };
     },
-    async sign(text, time) {
+    /**
+     * Підписує текст (CAdES, дані всередині). opts.post(url, bodyB64) → Promise<{status, bodyB64}> — тоді
+     * до підпису додається позначка часу від TSP-сервера надавача (CAdES-E-T, потрібна фіскальному серверу ДПС).
+     */
+    async sign(text, time, opts) {
       if (!signKey) {
         const err = new Error("У файлі ключа немає сертифіката для підпису. Додайте файл сертифіката (.cer) разом із ключем.");
         err.code = "NOCERT";
         throw err;
       }
-      const der = await box.pipe(Buffer.from(String(text), "utf8"), [{ op: "sign", time: time || Math.floor(Date.now() / 1000) }], {});
+      const cmd = { op: "sign", time: time || Math.floor(Date.now() / 1000) };
+      if (opts && opts.post) {
+        box.query = (method, url, headers, payload, cb) => opts.post(url, Buffer.from(payload).toString("base64"))
+          .then((r) => cb(r.bodyB64 ? Buffer.from(r.bodyB64, "base64") : null, r.status), () => cb(null, 0));
+        cmd.tsp = "signature";
+      }
+      const der = await box.pipe(Buffer.from(String(text), "utf8"), [cmd], {});
       return Buffer.from(der).toString("base64");
     },
+    /** Адреса TSP-сервера надавача з сертифіката ключа. */
+    tspUrl() { try { return signKey.cert.extension.subjectInfoAccess.link; } catch (e) { return null; } },
   };
 }
 

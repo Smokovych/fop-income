@@ -341,7 +341,7 @@ function download(filename, text, type) {
 }
 
 const state = { year: new Date().getFullYear(), txShown: 100 };
-const loaders = { overview: loadOverview, transactions: () => loadTransactions(true), taxes: loadTaxes, banks: loadBanks, account: loadAccount, rules: loadRules, settings: loadSettings };
+const loaders = { overview: loadOverview, transactions: () => loadTransactions(true), taxes: loadTaxes, fiscal: loadFiscal, banks: loadBanks, account: loadAccount, rules: loadRules, settings: loadSettings };
 let activeTab = "overview";
 
 function openTab(name) {
@@ -1510,6 +1510,7 @@ addEventListener("hashchange", () => { const t = location.hash.slice(1); if (t i
 initPrivatForm();
 initTaxTab();
 initTaxesTab();
+initFiscalTab();
 setStatus("");
 renderBanner();
 if (S.connections.length) setTimeout(() => syncAll(), 500);

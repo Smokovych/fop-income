@@ -44,6 +44,8 @@ TAX_API = os.environ.get("TAX_API", "https://cabinet.tax.gov.ua/ws/public_api").
 NODE_BIN = os.environ.get("NODE_BIN", "node")
 # Лише для тестів: куди насправді слати CMP-запити (пошук сертифіката ключа)
 CMP_TEST_URL = os.environ.get("CMP_TEST_URL", "")
+# Фіскальний сервер ДПС (ПРРО): команди перегляду кас, змін і чеків
+FISCAL_API = os.environ.get("FISCAL_API", "https://fs.tax.gov.ua:8643/fs").rstrip("/")
 # Пауза між запитами виписки Monobank (ліміт банку — 1 запит на 60 с)
 MONO_MIN_INTERVAL_SEC = float(os.environ.get("MONO_MIN_INTERVAL_SEC", "61"))
 

@@ -194,6 +194,17 @@ def api_tax_budget(h, m, body):
     return _bg(bg.tax_budget, year)
 
 
+@route("POST", "/api/fiscal/refresh")
+def api_fiscal_refresh(h, m, body):
+    # довге завантаження (до кількох хвилин на частину) — у фоні; програма побачить результат при опитуванні стану
+    if not bg.kep_get()["stored"]:
+        raise HttpError(409, "Ключ КЕП не збережено на сервері — збережіть його на вкладці «Облікові дані»")
+    if bg.status.get("running"):
+        return {"started": False, "running": bg.status["running"]}
+    bg.start_fiscal()
+    return {"started": True}
+
+
 @route("GET", "/api/ai/status")
 def api_ai_status(h, m, body):
     return {"enabled": ai.enabled(), "model": ai.MODEL}

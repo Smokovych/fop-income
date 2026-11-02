@@ -4,8 +4,10 @@
 //   {cmd:"sync", state, api}                          → {state}            оновити виписки всіх банків
 //   {cmd:"kep-store", files:[b64], password, secret, api} → {blob, info}   перевірити ключ КЕП і зашифрувати
 //   {cmd:"tax-refresh", state, blob, secret, api}     → {state}            облікові дані з Кабінету
-// Ключ КЕП зберігається лише зашифрованим (AES-256-GCM, ключ шифрування — HKDF від секрету сервера) і
-// використовується тільки для підпису РНОКПП платника — іншого тексту воркер не підписує.
+//   {cmd:"fiscal", state, blob, secret, api}          → {state, more}      фіскальні чеки ПРРО з фіскального сервера ДПС
+// Ключ КЕП зберігається лише зашифрованим (AES-256-GCM, ключ шифрування — HKDF від секрету сервера) і підписує
+// лише РНОКПП платника (Кабінет) та команди ПЕРЕГЛЯДУ фіскального сервера (FISCAL_READ_COMMANDS) — видати чек чи
+// відкрити зміну ним неможливо.
 "use strict";
 const fs = require("fs");
 const path = require("path");
@@ -101,6 +103,142 @@ async function openStoredKey(ctx, files, password, certB64) {
   return key;
 }
 
+// ---------------------------------------------------------------- фіскальний сервер ДПС (ПРРО)
+// Протокол: JSON-команда, підписана КЕП (CAdES, дані всередині), POST на <адреса>/cmd як application/octet-stream.
+// Відповідь — JSON (з ?resultAsJson=true помилки теж JSON: ErrorCode/ErrorMessage). Дати змін — ISO 8601.
+const FISCAL_READ_COMMANDS = new Set(["Objects", "Shifts", "Documents", "CheckExt"]);
+let fsTsp = false;   // чи вимагає сервер позначку часу (CAdES-E-T) — з'ясовується за першою відмовою
+
+async function fiscalCmd(ctx, key, api, cmd) {
+  if (!FISCAL_READ_COMMANDS.has(cmd.Command)) throw new Error("Недозволена команда фіскального сервера");
+  const text = JSON.stringify(Object.assign({}, cmd, { UID: nodeCrypto.randomUUID() }));
+  const post = async (url, bodyB64) => {
+    try {
+      const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/tsp-request" }, body: Buffer.from(bodyB64, "base64") });
+      return { status: r.status, bodyB64: Buffer.from(await r.arrayBuffer()).toString("base64") };
+    } catch (e) { return { status: 0, bodyB64: "" }; }
+  };
+  for (let attempt = 0; attempt < 3; attempt++) {
+    let signed;
+    try { signed = await key.sign(text, null, fsTsp ? { post } : undefined); }
+    catch (e) { if (fsTsp) throw new Error("Не вдалося отримати позначку часу від надавача ключа"); throw e; }
+    let r;
+    try {
+      r = await fetch(api.fiscal + "/cmd?resultAsJson=true", { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: Buffer.from(signed, "base64") });
+    } catch (e) {
+      if (attempt < 2) { await new Promise((ok) => setTimeout(ok, 3000 * (attempt + 1))); continue; }
+      throw new Error("Немає зв'язку з фіскальним сервером ДПС: " + ((e.cause && e.cause.code) || e.message));
+    }
+    if (r.status === 204) return null;
+    const body = await r.text();
+    let j = null;
+    try { j = JSON.parse(body); } catch (e) { /* не JSON */ }
+    const err = j && j.ErrorCode != null && j.ErrorCode !== 0 ? `${j.ErrorMessage || "помилка"} (код ${j.ErrorCode})` : !r.ok ? (body || "HTTP " + r.status).slice(0, 300) : null;
+    if (err) {
+      if (!fsTsp && /позначк|timestamp|час(у)? засвідч/i.test(err)) { fsTsp = true; continue; }   // повтор з позначкою часу
+      if ([500, 502, 503, 504].includes(r.status) && attempt < 2) { await new Promise((ok) => setTimeout(ok, 3000 * (attempt + 1))); continue; }
+      throw new Error("Фіскальний сервер: " + err);
+    }
+    if (!j) throw new Error("Фіскальний сервер повернув відповідь у незнайомому форматі");
+    return j;
+  }
+  throw new Error("Фіскальний сервер не відповідає");
+}
+
+// XML чека (windows-1251) → коротка картка: шапка, сума, форми оплати, товари
+function parseCheckXml(buf) {
+  let xml = new TextDecoder("windows-1251").decode(buf);
+  if (!/<CHECK[\s>]/.test(xml)) {
+    // підписаний документ (CMS) — XML лежить усередині, шукаємо його в байтах
+    const raw = Buffer.from(buf).toString("latin1"), a = raw.indexOf("<?xml"), b = raw.lastIndexOf("</CHECK>");
+    if (a < 0 || b < 0) return null;
+    xml = new TextDecoder("windows-1251").decode(Buffer.from(raw.slice(a, b + 8), "latin1"));
+  }
+  const tag = (s, n) => { const m = s.match(new RegExp(`<${n}>([\\s\\S]*?)</${n}>`)); return m ? m[1].replace(/&quot;/g, '"').replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&apos;/g, "'").trim() : null; };
+  const rows = (s, n) => { const m = s.match(new RegExp(`<${n}>([\\s\\S]*?)</${n}>`)); return m ? [...m[1].matchAll(/<ROW[^>]*>([\s\S]*?)<\/ROW>/g)].map((x) => x[1]) : []; };
+  const head = tag(xml, "CHECKHEAD") || "", total = tag(xml, "CHECKTOTAL") || "";
+  const n = (v) => (v == null ? null : Number(String(v).replace(",", ".")));
+  return {
+    doctype: n(tag(head, "DOCTYPE")), subtype: n(tag(head, "DOCSUBTYPE")),
+    date: tag(head, "ORDERDATE"), time: tag(head, "ORDERTIME"), cashier: tag(head, "CASHIER"),
+    point: tag(head, "POINTNM"), sum: n(tag(total, "SUM")),
+    pays: rows(xml, "CHECKPAY").map((r) => ({ form: tag(r, "PAYFORMNM"), code: n(tag(r, "PAYFORMCD")), sum: n(tag(r, "SUM")) })),
+    items: rows(xml, "CHECKBODY").map((r) => ({ name: tag(r, "NAME"), qty: n(tag(r, "AMOUNT")), unit: tag(r, "UNITNM"), price: n(tag(r, "PRICE")), cost: n(tag(r, "COST")) })),
+  };
+}
+
+// Синхронізація: каси (Objects) → зміни за період (по місяцях, від свіжих до старих) → документи зміни → чеки.
+// Працює до SYNC_DEADLINE; повертає true, якщо ще є що довантажувати (сервер запустить наступну частину).
+async function fiscalSync(ctx, F, S, key, api, req) {
+  const FS = S.fiscal;
+  const deadline = Date.now() + (Number(api.maxRunMs) || 8 * 60 * 1000);
+  const timeUp = () => Date.now() > deadline;
+  const today = F.kyivDate(F.nowTs());
+  const startIso = req.from || (S.settings.sync_start || today.slice(0, 4) + "-01-01");
+  const objs = await fiscalCmd(ctx, key, api, { Command: "Objects" });
+  for (const o of (objs && objs.TaxObjects) || []) {
+    for (const r of o.TransactionsRegistrars || []) {
+      const id = String(r.NumFiscal);
+      FS.registrars[id] = Object.assign(FS.registrars[id] || {}, { id, name: r.Name || "", local: r.NumLocal, closed: !!r.Closed,
+        object: o.Name || "", address: o.Address || "", org: o.OrgName || "" });
+    }
+  }
+  if (!Object.keys(FS.registrars).length) { F.log("info", "Фіскальний сервер: ПРРО для вашого ключа не знайдено"); return false; }
+  let newChecks = 0;
+  for (const reg of Object.values(FS.registrars)) {
+    // 1) свіжі зміни: від останнього завантаженого дня (з перекриттям 2 дні) до сьогодні; 2) історія назад по місяцях
+    const tomorrow = new Date(Date.parse(today) + 864e5).toISOString().slice(0, 10);
+    if (reg.loaded_to) {
+      const fresh = new Date(Date.parse(reg.loaded_to) - 2 * 864e5).toISOString().slice(0, 10);
+      if (await fiscalWindow(ctx, F, FS, key, api, reg, fresh, today, () => newChecks++, timeUp)) reg.loaded_to = today;
+    }
+    if (!reg.loaded_from) reg.loaded_from = tomorrow;
+    while (!timeUp() && reg.loaded_from > startIso) {
+      const end = new Date(Date.parse(reg.loaded_from) - 864e5);
+      const from = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), 1)).toISOString().slice(0, 10);
+      const f = from < startIso ? startIso : from, t = end.toISOString().slice(0, 10);
+      if (!(await fiscalWindow(ctx, F, FS, key, api, reg, f, t, () => newChecks++, timeUp))) break;
+      reg.loaded_from = f;
+      if (!reg.loaded_to) reg.loaded_to = today;
+    }
+  }
+  F.log("info", `Фіскальні чеки: нових ${newChecks}, усього ${Object.keys(FS.checks).length}`);
+  return Object.values(FS.registrars).some((r) => r.loaded_from > startIso);
+}
+
+async function fiscalWindow(ctx, F, FS, key, api, reg, from, to, onNew, timeUp) {
+  const sh = await fiscalCmd(ctx, key, api, { Command: "Shifts", NumFiscal: reg.id, From: from + "T00:00:00+03:00", To: to + "T23:59:59+02:00" });
+  for (const s of (sh && sh.Shifts) || []) {
+    if (timeUp()) return false;
+    const sid = String(s.ShiftId);
+    const known = FS.shifts[sid];
+    if (known && known.done) continue;   // закриту й повністю завантажену зміну не перечитуємо
+    FS.shifts[sid] = { id: sid, reg: reg.id, opened: s.Opened || null, closed: s.Closed || null, cashier: s.OpenName || "", z: s.ZRepFiscalNum || null, testing: !!s.Testing };
+    const docs = await fiscalCmd(ctx, key, api, { Command: "Documents", NumFiscal: reg.id, ShiftId: sid, OpenShiftFiscalNum: s.OpenShiftFiscalNum != null ? String(s.OpenShiftFiscalNum) : undefined });
+    let complete = true;
+    for (const d of (docs && docs.Documents) || []) {
+      if (d.DocClass !== "Check" || !d.NumFiscal) continue;
+      const fn = String(d.NumFiscal);
+      if (FS.checks[fn] && FS.checks[fn].items) { Object.assign(FS.checks[fn], { revoked: !!d.Revoked, storned: !!d.Storned }); continue; }
+      if (timeUp()) { complete = false; break; }
+      const c = { fn, reg: reg.id, shift: sid, local: d.NumLocal, dt: d.DocDateTime || null, type: d.CheckDocType || "", subtype: d.CheckDocSubType || "",
+        revoked: !!d.Revoked, storned: !!d.Storned };
+      if (/^(SaleGoods|ReturnGoods|Sale|Return)/i.test(c.type) || !c.type) {
+        try {
+          const r = await fiscalCmd(ctx, key, api, { Command: "CheckExt", RegistrarNumFiscal: reg.id, NumFiscal: fn, Type: 1, AcquireCabinetUrl: true });
+          if (r && r.Data) Object.assign(c, parseCheckXml(Buffer.from(r.Data, "base64")) || {});
+          if (r && r.CabinetUrl) c.url = r.CabinetUrl;
+        } catch (e) { c.error = e.message; complete = false; }
+      }
+      c.items = c.items || [];
+      FS.checks[fn] = c;
+      onNew();
+    }
+    FS.shifts[sid].done = complete && !!s.Closed;
+  }
+  return !timeUp();
+}
+
 async function main() {
   const req = await readStdin();
   const api = req.api || {};
@@ -166,6 +304,24 @@ async function main() {
     } catch (e) {
       return { state: S, error: e.message };
     }
+  }
+  if (req.cmd === "fiscal") {
+    F.load(req.state);
+    const S = F.S;
+    S.fiscal = S.fiscal || { registrars: {}, shifts: {}, checks: {} };
+    const out = { state: S, more: false };
+    try {
+      const k = decrypt(req.blob, req.secret);
+      const key = await openStoredKey(ctx, k.files, k.password, S.tax && S.tax.cert_b64);
+      out.more = await fiscalSync(ctx, F, S, key, api, req);
+      S.fiscal.more = out.more;
+      S.fiscal.error = null;
+    } catch (e) {
+      S.fiscal.error = e.message;
+      F.log("error", `Фіскальні чеки: ${e.message}`);
+    }
+    S.fiscal.fetched_at = Math.floor(Date.now() / 1000);
+    return out;
   }
   throw new Error("Невідома команда");
 }

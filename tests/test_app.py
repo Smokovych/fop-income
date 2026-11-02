@@ -22,6 +22,7 @@ os.environ.update({
     "NBU_API": f"http://127.0.0.1:{MOCK_PORT}/nbu",
     "TAX_API": f"http://127.0.0.1:{MOCK_PORT}/tax",
     "CMP_TEST_URL": f"http://127.0.0.1:{MOCK_PORT}/cmp",
+    "FISCAL_API": f"http://127.0.0.1:{MOCK_PORT}/fs",
     "SECRET_KEY": "test-secret-key-0123456789",
     "KEP_TEST_SKIP_EXPIRY": "1",
     "MONO_MIN_INTERVAL_SEC": "0",
@@ -445,6 +446,27 @@ class T7_Background(unittest.TestCase):
         self.assertEqual(st["tax"]["card"][0]["values"]["TIN"], "1234567890")
         self.assertTrue(st["tax"]["cert_b64"])
         self.assertTrue(self.bg.kep_get()["stored"])
+        # фіскальні чеки ПРРО: каси → зміни → документи → чеки (ключ підписує лише команди перегляду)
+        st = self.store.get()["state"]
+        st["settings"]["sync_start"] = f"{mock_banks.YEAR}-09-01"
+        self.store.put(st, self.store.get()["version"], device="test")
+        mock_banks.FS_LOG.clear()
+        res = self.bg.fiscal_sync()
+        self.assertIsNone(res["error"])
+        f = self.store.get()["state"]["fiscal"]
+        self.assertEqual(list(f["registrars"]), ["4000123456"])
+        self.assertEqual(sorted(f["checks"]), ["1001", "1002", "1003", "2001"])
+        c = f["checks"]["1001"]
+        self.assertEqual((c["sum"], c["date"], c["time"], c["pays"][0]["form"]), (185.5, f"0510{mock_banks.YEAR}", "093000", "Готівка"))
+        self.assertEqual([i["name"] for i in c["items"]], ["Кава лате", "Круасан"])
+        self.assertEqual(f["checks"]["1003"]["subtype"], 1)
+        self.assertTrue(c["url"].startswith("https://cabinet.tax.gov.ua/"))
+        self.assertEqual(set(mock_banks.FS_LOG), {"Objects", "Shifts", "Documents", "CheckExt"})
+        # повторно — закриті зміни не перечитуються, чеки не дублюються
+        mock_banks.FS_LOG.clear()
+        self.bg.fiscal_sync()
+        self.assertNotIn("CheckExt", mock_banks.FS_LOG)
+        self.assertEqual(len(self.store.get()["state"]["fiscal"]["checks"]), 4)
         self.bg.kep_delete()
         self.assertFalse(self.bg.kep_get()["stored"])
 

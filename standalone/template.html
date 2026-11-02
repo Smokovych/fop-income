@@ -68,6 +68,14 @@
   .chart .guide { stroke: rgba(127,127,127,.6); stroke-dasharray: 3 3; }
   .chart .dot { fill: var(--series-1, #2a78d6); stroke: var(--card, #fff); stroke-width: 2; }
   .chart .hit { fill: transparent; }
+  .fc-table tr.fc-row { cursor: pointer; }
+  .fc-table tr.fc-row:hover td, .fc-table tr.fc-row.open td { background: rgba(42,120,214,.08); }
+  .fc-table tr.fc-void td { opacity: .55; }
+  .fc-table .caret { display: inline-block; width: 1.1em; color: var(--muted, #888); }
+  .fc-table td.num { white-space: nowrap; }
+  .fc-table .neg { color: #dc2626; }
+  .fc-table tr.fc-detail > td { background: rgba(127,127,127,.05); padding: 10px 12px 14px; }
+  @media (max-width: 640px) { .fc-table > thead > tr > th:nth-child(3), .fc-table > tbody > tr.fc-row > td:nth-child(3) { display: none; } .fc-table td, .fc-table th { padding-left: 8px; padding-right: 8px; } }
 </style>
 </head>
 <body>
@@ -87,6 +95,7 @@
         <button data-tab="overview" class="active">Огляд</button>
         <button data-tab="transactions">Операції <span class="badge" id="review-badge" title="Надходження, що чекають підтвердження, що це дохід" hidden></span><span class="badge badge-red" id="kved-badge" title="Надходження, для яких треба підтвердити відповідність КВЕДу" hidden></span></button>
         <button data-tab="taxes">Податки</button>
+        <button data-tab="fiscal">Фіскальні чеки</button>
         <button data-tab="banks">Банки</button>
         <button data-tab="account">Облікові дані</button>
         <button data-tab="rules">Правила</button>
@@ -219,6 +228,26 @@
       </section>
 
       <!-- ПОДАТКИ -->
+      <section id="tab-fiscal" class="tab hidden">
+        <div class="section-head">
+          <h2>Фіскальні чеки</h2>
+          <div class="conn-actions"><button class="btn primary" type="button" id="btn-fc-refresh">Оновити з фіскального сервера</button></div>
+        </div>
+        <p class="muted small" id="fc-status"></p>
+        <div class="filters card">
+          <label>Рік <select id="fc-year"></select></label>
+          <label>Місяць <select id="fc-month"></select></label>
+          <label>Каса <select id="fc-reg"></select></label>
+          <label>Тип <select id="fc-type"><option value="">Усі</option><option value="sale">Продажі</option><option value="return">Повернення</option></select></label>
+          <label class="grow">Пошук <input type="search" id="fc-q" placeholder="Номер чека, товар, касир…"></label>
+        </div>
+        <div class="kpis kpis-3" id="fc-kpis"></div>
+        <p class="muted small" id="fc-count"></p>
+        <div class="card flush"><div class="table-wrap"><table class="table fc-table" id="fc-table"></table></div></div>
+        <button class="btn hidden" type="button" id="fc-more" style="margin-top:10px">Показати ще</button>
+        <p class="muted small">Чеки програмних РРО (ПРРО) беруться з фіскального сервера ДПС ключем КЕП, збереженим на сервері (вкладка «Облікові дані»). Ключ підписує лише запити перегляду кас, змін і чеків. Чеки апаратних РРО фіскальний сервер не зберігає.</p>
+      </section>
+
       <section id="tab-taxes" class="tab hidden">
         <div class="section-head">
           <h2>Податки</h2>
