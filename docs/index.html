@@ -371,6 +371,44 @@ p.small.warn { padding: 8px 12px; }
 .raw-data pre { max-height: 420px; overflow: auto; background: var(--surface-2); padding: 10px; border-radius: 8px; font: 12px/1.45 ui-monospace, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .badge.badge-red { background: #dc2626; color: #fff; margin-left: 4px; }
+
+/* ---------------- облікові записи, профілі ФОП */
+.login-card h1 { display: flex; align-items: center; gap: 8px; font-size: 22px; margin: 0; }
+.auth-seg { align-self: flex-start; }
+.onboard-card { width: 100%; max-width: 560px; display: flex; flex-direction: column; gap: 12px; }
+.onboard-card h1 { font-size: 22px; margin: 0; }
+.onboard-card .check { display: flex; gap: 8px; align-items: flex-start; font-size: 14px; line-height: 1.4; }
+.onboard-card .check input { margin-top: 3px; flex-shrink: 0; width: auto; }
+.ob-accountant { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 4px; }
+.ob-accountant h3 { margin: 0 0 4px; font-size: 15px; }
+.brand-wrap { position: relative; min-width: 0; flex-shrink: 0; max-width: 45%; }
+button.brand { display: flex; }
+button.brand { border: 0; background: transparent; color: inherit; font: inherit; font-weight: 700; padding: 4px 6px; margin-left: -6px; border-radius: 8px; max-width: 100%; }
+button.brand:not(:disabled) { cursor: pointer; }
+button.brand:not(:disabled):hover { background: var(--surface-2, rgba(127,127,127,.1)); }
+button.brand:disabled { color: inherit; opacity: 1; }
+#brand-text { white-space: nowrap; }
+.brand-tin { font-weight: 400; color: var(--muted); margin-left: 6px; font-variant-numeric: tabular-nums; }
+.brand-caret { color: var(--muted); font-size: 12px; }
+.profile-menu { position: absolute; left: 0; top: calc(100% + 6px); z-index: 50; min-width: 280px; max-width: calc(100vw - 24px); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: 0 8px 28px rgba(0,0,0,.18); padding: 6px; }
+.profile-menu .pm-item { display: flex; width: 100%; text-align: left; gap: 8px; align-items: baseline; border: 0; background: transparent; color: inherit; font: inherit; padding: 8px 10px; border-radius: 8px; cursor: pointer; }
+.profile-menu .pm-item:hover { background: var(--surface-2, rgba(127,127,127,.1)); }
+.profile-menu .pm-item.active { background: rgba(42,120,214,.12); }
+.profile-menu .pm-name { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.profile-menu .pm-meta { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.profile-menu hr { border: 0; border-top: 1px solid var(--border); margin: 6px 0; }
+.profile-menu .pm-user { padding: 6px 10px; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; }
+.access-dialog .card-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.access-dialog .card-head h3 { margin: 0; }
+.acc-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.acc-row .acc-who { flex: 1; min-width: 180px; }
+.acc-row .acc-who small { display: block; color: var(--muted); }
+.acc-role { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: rgba(42,120,214,.12); white-space: nowrap; }
+.acc-role.pending { background: var(--warn-bg); color: var(--warn); }
+.acc-form { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+.acc-form input { flex: 1; min-width: 200px; }
+.acc-form select { width: auto; }
+@media (max-width: 720px) { .brand-wrap { flex: 1; flex-shrink: 1; max-width: none; } #brand-text { overflow: hidden; text-overflow: ellipsis; min-width: 0; line-height: 1.15; text-align: left; } .brand-tin { display: block; margin-left: 0; font-size: 11px; } .profile-menu { position: fixed; left: 12px; right: 12px; top: 56px; min-width: 0; } }
   .ai-log { position: relative; display: flex; flex-direction: column; gap: 10px; height: 380px; overflow-y: auto; overscroll-behavior: contain; margin: 8px 0; padding: 8px; border: 1px solid rgba(127,127,127,.25); border-radius: 10px; }
   .ai-log:empty::before { content: "Оберіть запитання вище або напишіть своє — відповідь з'явиться тут."; color: rgba(127,127,127,.9); margin: auto; text-align: center; padding: 0 16px; }
   @media (max-width: 640px) { .ai-log { height: 55vh; } }
@@ -445,17 +483,55 @@ p.small.warn { padding: 8px 12px; }
 </head>
 <body>
   <div id="login" class="login hidden">
-    <form id="login-form" class="card login-card">
-      <h1>ФОП-дохід</h1>
-      <p class="muted">Введіть пароль, щоб продовжити</p>
-      <input type="password" id="login-password" placeholder="Пароль" autocomplete="current-password" required>
-      <button class="btn primary" type="submit">Увійти</button>
+    <form id="login-form" class="card login-card" autocomplete="on">
+      <h1><span class="logo">₴</span> ФОП-дохід</h1>
+      <div class="seg auth-seg" role="tablist"><button type="button" data-mode="login" class="active">Вхід</button><button type="button" data-mode="register">Реєстрація</button></div>
+      <p class="muted small" id="login-lead">Увійдіть, щоб продовжити</p>
+      <label class="field auth-reg hidden">Ім'я та прізвище<input id="login-name" autocomplete="name" maxlength="120"></label>
+      <label class="field">Електронна пошта<input type="email" id="login-email" autocomplete="username" required></label>
+      <label class="field">Пароль<input type="password" id="login-password" autocomplete="current-password" required minlength="8"></label>
+      <label class="field auth-reg hidden">Повторіть пароль<input type="password" id="login-password2" autocomplete="new-password" minlength="8"></label>
+      <button class="btn primary" type="submit" id="login-submit">Увійти</button>
       <p id="login-error" class="error"></p>
     </form>
   </div>
+  <div id="onboard" class="login hidden">
+    <form id="onboard-form" class="card onboard-card" autocomplete="off">
+      <h1>Додайте свій ФОП</h1>
+      <p class="muted small">Програма відкриє ваш ключ КЕП і за ним отримає з Електронного кабінету платника ваші ПІБ, РНОКПП, групу єдиного податку, КВЕДи, податкову та стан розрахунків з бюджетом — вкладка «Облікові дані» заповниться сама.</p>
+      <label class="field">Файл ключа<span class="muted small"> — .pfx, .jks, Key-6.dat; якщо сертифікат окремо — оберіть і його (.cer)</span>
+        <input type="file" id="ob-files" multiple required accept=".pfx,.p12,.jks,.dat,.zs2,.sk,.pk8,.key,.cer,.crt,.pem"></label>
+      <label class="field">Пароль ключа<input type="password" id="ob-password" autocomplete="off" spellcheck="false" required></label>
+      <label class="field hidden" id="ob-tin-field">РНОКПП<span class="muted small"> — у сертифікаті вашого ключа його немає, вкажіть вручну (10 цифр)</span>
+        <input id="ob-tin" inputmode="numeric" maxlength="10" placeholder="1234567890"></label>
+      <label class="check"><input type="checkbox" id="ob-consent" required> <span>Дозволяю програмі зберегти мій ключ на сервері в зашифрованому вигляді та отримувати мої дані з Електронного кабінету платника. Ключем підписується лише РНОКПП для входу до Кабінету; подати звіт чи сплатити ним програма не може. Ключ можна видалити будь-коли.</span></label>
+      <div class="conn-actions"><button class="btn primary" type="submit" id="ob-submit">Підключити ФОП</button><button class="btn hidden" type="button" id="ob-cancel">Скасувати</button></div>
+      <p id="ob-status" class="small muted"></p>
+      <div class="ob-accountant">
+        <h3>Ви бухгалтер?</h3>
+        <p class="muted small">Попросіть клієнта надати доступ на вашу адресу <b id="ob-email"></b> (у програмі: меню з його ПІБ угорі → «Доступ до ФОП»). Його ФОП з'явиться у вашому списку.</p>
+        <div class="conn-actions"><button class="btn" type="button" id="ob-recheck">Перевірити доступи</button><button class="btn" type="button" id="ob-logout">Вийти</button></div>
+      </div>
+    </form>
+  </div>
+  <dialog id="access-dialog" class="req-dialog access-dialog">
+    <div class="card-head"><h3>Доступ до ФОП <span id="acc-title" class="muted"></span></h3><button class="btn" type="button" id="acc-close">Закрити</button></div>
+    <p class="muted small">Бухгалтер бачить усі дані ФОП, веде облік, оновлює виписки й дані з Кабінету збереженим ключем. Видаляти ключ і роздавати доступ може лише власник.</p>
+    <div id="acc-list"></div>
+    <form id="acc-form" class="inline-form acc-form">
+      <input type="email" id="acc-email" placeholder="email бухгалтера" required>
+      <select id="acc-role"><option value="accountant">Бухгалтер</option><option value="owner">Власник (повний доступ)</option></select>
+      <button class="btn primary" type="submit">Надати доступ</button>
+    </form>
+    <p class="muted small" id="acc-hint">Якщо людина ще не зареєстрована, доступ з'явиться в неї одразу після реєстрації з цією адресою.</p>
+    <p id="acc-error" class="error small"></p>
+  </dialog>
   <div id="app">
     <header class="topbar">
-      <div class="brand"><span class="logo">₴</span> ФОП-дохід</div>
+      <div class="brand-wrap">
+        <button type="button" class="brand" id="brand" disabled><span class="logo">₴</span> <span id="brand-text">ФОП-дохід</span><span class="brand-caret" hidden>▾</span></button>
+        <div class="profile-menu hidden" id="profile-menu" role="menu"></div>
+      </div>
       <nav class="tabs" id="tabs">
         <button data-tab="overview" class="active">Огляд</button>
         <button data-tab="transactions">Операції <span class="badge" id="review-badge" title="Надходження, що чекають підтвердження, що це дохід" hidden></span><span class="badge badge-red" id="kved-badge" title="Надходження, для яких треба підтвердити відповідність КВЕДу" hidden></span></button>
@@ -3563,9 +3639,14 @@ function absorbRemote(theirs) {
 }
 
 // ---------------------------------------------------------------- запити до сервера
+// ME — хто увійшов і до яких ФОП має доступ (/api/me); ACTIVE — ФОП, з даними якого зараз працює програма.
+// Кожен запит до даних іде із заголовком X-Profile — сервер перевіряє доступ до цього ФОП.
+let ME = null, ACTIVE = null;
+const PROFILE_KEY = "fopIncome.profile";
 let loginWaiter = null;
 async function api(method, path, body, opts = {}) {
   const init = { method, credentials: "same-origin", headers: {} };
+  if (ACTIVE && !opts.noProfile) init.headers["X-Profile"] = String(ACTIVE.id);
   if (body !== undefined) {
     init.headers["Content-Type"] = "application/json";
     init.body = body;
@@ -3576,25 +3657,61 @@ async function api(method, path, body, opts = {}) {
   catch { throw new Error("Немає зв'язку з сервером"); }
   if (r.status === 401 && !opts.noLogin) { await showLogin(); return api(method, path, body, opts); }
   const data = await r.json().catch(() => ({}));
+  if (r.status === 403 && ACTIVE && data.error === "Немає доступу до цього ФОП") lostAccess();
   return { ok: r.ok, status: r.status, data };
 }
 
+let lostShown = false;
+function lostAccess() {
+  if (lostShown) return;
+  lostShown = true;
+  try { localStorage.removeItem(PROFILE_KEY); } catch {}
+  R.changes = 0;
+  alert("Доступ до цього ФОП більше не надається. Програма відкриє інший ФОП.");
+  location.reload();
+}
+
+// Вхід і реєстрація (один екран, два режими)
 function showLogin() {
   if (loginWaiter) return loginWaiter;
   const box = $("#login"), form = $("#login-form"), err = $("#login-error");
+  let mode = "login";
+  const setMode = (m) => {
+    mode = m;
+    for (const b of form.querySelectorAll(".auth-seg button")) b.classList.toggle("active", b.dataset.mode === m);
+    for (const el of form.querySelectorAll(".auth-reg")) el.classList.toggle("hidden", m !== "register");
+    $("#login-name").required = $("#login-password2").required = m === "register";
+    $("#login-password").autocomplete = m === "register" ? "new-password" : "current-password";
+    $("#login-submit").textContent = m === "register" ? "Зареєструватися" : "Увійти";
+    $("#login-lead").textContent = m === "register"
+      ? "Створіть обліковий запис. Далі ви підключите свій ФОП ключем КЕП — або отримаєте доступ до ФОП клієнтів, якщо ви бухгалтер."
+      : "Увійдіть, щоб продовжити";
+    err.textContent = "";
+  };
+  form.querySelectorAll(".auth-seg button").forEach((b) => { b.onclick = () => setMode(b.dataset.mode); });
+  setMode("login");
   box.classList.remove("hidden");
   $("#app").classList.add("hidden");
-  $("#login-password").focus();
+  $("#onboard").classList.add("hidden");
+  $("#login-email").focus();
   loginWaiter = new Promise((resolve) => {
     form.onsubmit = async (e) => {
       e.preventDefault();
       err.textContent = "";
-      const res = await api("POST", "/api/login", JSON.stringify({ password: $("#login-password").value }), { noLogin: true })
+      const email = $("#login-email").value.trim(), password = $("#login-password").value;
+      if (mode === "register" && password !== $("#login-password2").value) { err.textContent = "Паролі не збігаються"; return; }
+      const body = mode === "register" ? { email, password, name: $("#login-name").value.trim() } : { email, password };
+      $("#login-submit").disabled = true;
+      const res = await api("POST", mode === "register" ? "/api/register" : "/api/login", JSON.stringify(body), { noLogin: true, noProfile: true })
         .catch((x) => ({ ok: false, data: { error: x.message } }));
+      $("#login-submit").disabled = false;
       if (!res.ok) { err.textContent = res.data.error || "Не вдалося увійти"; return; }
-      $("#login-password").value = "";
+      // інший користувач на тому самому пристрої — почати з чистого аркуша
+      if (ME && ME.user && ME.user.id !== res.data.user.id) { R.changes = 0; location.reload(); return; }
+      ME = res.data;
+      $("#login-password").value = $("#login-password2").value = "";
       box.classList.add("hidden");
-      $("#app").classList.remove("hidden");
+      if (S) $("#app").classList.remove("hidden");
       loginWaiter = null;
       resolve();
     };
@@ -3611,21 +3728,41 @@ async function gzipText(text) {
 // ---------------------------------------------------------------- завантаження і збереження
 async function remoteBoot() {
   $("#app").classList.add("hidden");
-  const me = await api("GET", "/api/me", undefined, { noLogin: true });
-  if (!me.data.auth_required && !me.data.authenticated) throw new Error("На сервері не задано пароль. Додайте змінну APP_PASSWORD у налаштуваннях сервера (Railway → Variables) і оновіть сторінку.");
-  if (me.data.auth_required && !me.data.authenticated) await showLogin();
+  const me = await api("GET", "/api/me", undefined, { noLogin: true, noProfile: true });
+  if (!me.ok) throw new Error(me.data.error || "Сервер недоступний");
+  ME = me.data;
+  if (!ME.authenticated) await showLogin();
+  ACTIVE = pickProfile();
+  if (!ACTIVE) {
+    ACTIVE = await showOnboard(false);
+    if (ACTIVE) location.hash = "account"; // щойно підключений ФОП — одразу показати облікові дані з Кабінету
+  }
+  try { localStorage.setItem(PROFILE_KEY, String(ACTIVE.id)); } catch {}
+  if (ME.last_profile !== ACTIVE.id) api("POST", `/api/profiles/${ACTIVE.id}/select`, "{}").catch(() => {});
   $("#app").classList.add("hidden"); // показуємо програму лише після завантаження даних (інакше клік по вкладці — до появи S)
   const res = await api("GET", "/api/state");
   if (!res.ok) throw new Error(res.data.error || "Не вдалося завантажити дані з сервера");
   R.version = res.data.version;
   R.base = res.data.state ? JSON.parse(JSON.stringify(res.data.state)) : null;
   load(res.data.state);
+  // новий ФОП, для якого Кабінет ще не відповів, — ПІБ і РНОКПП із сертифіката ключа
+  if (!S.settings.owner_tax_id && ACTIVE.tin) S.settings.owner_tax_id = ACTIVE.tin;
+  if (!S.settings.owner_name && ACTIVE.name) S.settings.owner_name = ACTIVE.name;
   $("#app").classList.remove("hidden");
   if (!R.base || !sameJSON(R.base, S)) save();
   setInterval(pollRemote, 20000);
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") pollRemote(); });
   addEventListener("beforeunload", (e) => { if (R.changes || R.pushing) { e.preventDefault(); e.returnValue = ""; } });
   adaptUiForServer();
+  initProfileMenu();
+}
+
+// Який ФОП відкрити: останній на цьому пристрої → останній на сервері → перший зі списку
+function pickProfile() {
+  const list = (ME && ME.profiles) || [];
+  let saved = null;
+  try { saved = Number(localStorage.getItem(PROFILE_KEY)); } catch {}
+  return list.find((p) => p.id === saved) || list.find((p) => p.id === ME.last_profile) || list[0] || null;
 }
 
 function remoteSave(now) {
@@ -3704,7 +3841,7 @@ async function pollRemote(force) {
     absorbRemote(res.data.state);
     R.base = JSON.parse(JSON.stringify(res.data.state));
     R.version = res.data.version;
-    refreshActive(); renderBanner(); setStatus(statusText);
+    refreshActive(); renderBanner(); setStatus(statusText); renderBrand();
   } catch {}
 }
 
@@ -3733,8 +3870,231 @@ function adaptUiForServer() {
   const out = $("#btn-logout");
   if (out) {
     out.hidden = false;
-    out.onclick = async () => { await api("POST", "/api/logout", "{}", { noLogin: true }); location.reload(); };
+    out.onclick = logout;
   }
+}
+
+// ============================================================ облікові записи і профілі ФОП (режим сервера)
+// Кожен користувач працює з одним або кількома ФОП: своїм (власник) і клієнтськими (бухгалтер).
+// Угорі ліворуч — ПІБ і РНОКПП ФОП, з даними якого зараз працює програма; натиск відкриває меню:
+// перемикання між ФОП, «Додати ФОП», «Доступ до ФОП» (надати доступ бухгалтеру) і «Вийти».
+
+// «СМОКОВИЧ МИКОЛА ВАСИЛЬОВИЧ» → «Смокович М. В.»
+function shortName(full) {
+  const words = String(full || "").replace(/^(ФОП|ФІЗИЧНА ОСОБА[- ]ПІДПРИЄМЕЦЬ)\s+/i, "").trim().split(/\s+/).filter(Boolean);
+  if (!words.length) return "";
+  const cap = (w) => w.toLowerCase().replace(/(^|[-'’])(\p{L})/gu, (m, a, b) => a + b.toUpperCase());
+  return [cap(words[0]), ...words.slice(1, 3).map((w) => w[0].toUpperCase() + ".")].join(" ");
+}
+
+function brandInfo() {
+  const st = (typeof S !== "undefined" && S && S.settings) || {};
+  const name = st.owner_name || (ACTIVE && ACTIVE.name) || "";
+  const tin = st.owner_tax_id || (ACTIVE && ACTIVE.tin) || "";
+  return { name: shortName(name), tin };
+}
+
+function renderBrand() {
+  const el = typeof document !== "undefined" && document.getElementById("brand-text");
+  if (!el) return;
+  const { name, tin } = brandInfo();
+  el.innerHTML = name ? `${esc(name)}${tin ? `<span class="brand-tin">${esc(tin)}</span>` : ""}` : "ФОП-дохід";
+  const btn = $("#brand");
+  btn.title = name ? `${name}${tin ? ", РНОКПП " + tin : ""}${SERVER_MODE ? " — натисніть, щоб перемкнути ФОП або надати доступ" : ""}` : "";
+  document.title = name ? `${name} — ФОП-дохід` : "ФОП-дохід";
+}
+
+// ---------------------------------------------------------------- меню профілів
+function initProfileMenu() {
+  const btn = $("#brand"), menu = $("#profile-menu");
+  btn.disabled = false;
+  btn.querySelector(".brand-caret").hidden = false;
+  renderBrand();
+  btn.onclick = async (e) => {
+    e.stopPropagation();
+    if (!menu.classList.contains("hidden")) return closeProfileMenu();
+    renderProfileMenu();
+    menu.classList.remove("hidden");
+    // список доступів міг змінитися (клієнт надав доступ) — підтягуємо свіжий
+    const me = await api("GET", "/api/me", undefined, { noProfile: true }).catch(() => null);
+    if (me && me.ok) { ME = me.data; if (!menu.classList.contains("hidden")) renderProfileMenu(); }
+  };
+  document.addEventListener("click", (e) => { if (!menu.contains(e.target)) closeProfileMenu(); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeProfileMenu(); });
+  menu.onclick = (e) => {
+    const b = e.target.closest("[data-act]");
+    if (!b) return;
+    closeProfileMenu();
+    if (b.dataset.act === "switch") switchProfile(Number(b.dataset.id));
+    else if (b.dataset.act === "add") addProfile();
+    else if (b.dataset.act === "access") openAccess();
+    else if (b.dataset.act === "logout") logout();
+  };
+}
+
+function closeProfileMenu() { $("#profile-menu").classList.add("hidden"); }
+
+function renderProfileMenu() {
+  const list = (ME && ME.profiles) || [];
+  $("#profile-menu").innerHTML = list.map((p) => {
+    const cur = ACTIVE && p.id === ACTIVE.id;
+    const nm = (cur ? brandInfo().name : shortName(p.name)) || "ФОП без назви";
+    return `<button type="button" class="pm-item${cur ? " active" : ""}" data-act="switch" data-id="${p.id}" role="menuitem">
+      <span class="pm-name">${cur ? "✓ " : ""}${esc(nm)}</span><span class="pm-meta">${esc(p.tin || "")}${p.role === "accountant" ? " · бухгалтер" : ""}</span></button>`;
+  }).join("") + `<hr>
+    <button type="button" class="pm-item" data-act="access" role="menuitem">👥 Доступ до ФОП…</button>
+    <button type="button" class="pm-item" data-act="add" role="menuitem">＋ Додати ФОП</button>
+    <hr><div class="pm-user">${esc(ME.user.name)} · ${esc(ME.user.email)}</div>
+    <button type="button" class="pm-item" data-act="logout" role="menuitem">Вийти</button>`;
+}
+
+async function switchProfile(id) {
+  if (!ACTIVE || id === ACTIVE.id) return;
+  setStatus("Зберігаю зміни…");
+  await flushRemote();
+  try { localStorage.setItem(PROFILE_KEY, String(id)); } catch {}
+  await api("POST", `/api/profiles/${id}/select`, "{}").catch(() => {});
+  location.hash = "";
+  location.reload();
+}
+
+async function logout() {
+  await flushRemote();
+  await api("POST", "/api/logout", "{}", { noLogin: true, noProfile: true }).catch(() => {});
+  try { localStorage.removeItem(PROFILE_KEY); } catch {}
+  location.reload();
+}
+
+async function addProfile() {
+  const p = await showOnboard(true);
+  if (p) {
+    try { localStorage.setItem(PROFILE_KEY, String(p.id)); } catch {}
+    await flushRemote();
+    location.hash = "account";
+    location.reload();
+  }
+}
+
+// ---------------------------------------------------------------- підключення ФОП ключем КЕП
+async function fileB64(f) {
+  const buf = new Uint8Array(await f.arrayBuffer());
+  let s = ""; for (let i = 0; i < buf.length; i += 0x8000) s += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+
+// Повертає доданий/знайдений профіль або null (скасовано). cancelable — відкрито з меню, у користувача вже є ФОП.
+function showOnboard(cancelable) {
+  const box = $("#onboard"), form = $("#onboard-form"), status = $("#ob-status");
+  box.classList.remove("hidden");
+  $("#app").classList.add("hidden");
+  $("#ob-email").textContent = ME.user.email;
+  $("#ob-cancel").classList.toggle("hidden", !cancelable);
+  $("#ob-logout").classList.toggle("hidden", cancelable);
+  $(".ob-accountant").classList.toggle("hidden", cancelable);
+  status.className = "small muted"; status.textContent = "";
+  return new Promise((resolve) => {
+    const done = (p) => {
+      box.classList.add("hidden");
+      $("#ob-password").value = "";
+      if (cancelable && !p) $("#app").classList.remove("hidden");
+      resolve(p);
+    };
+    $("#ob-cancel").onclick = () => done(null);
+    $("#ob-logout").onclick = logout;
+    $("#ob-recheck").onclick = async () => {
+      const me = await api("GET", "/api/me", undefined, { noProfile: true });
+      if (me.ok) ME = me.data;
+      const p = pickProfile();
+      if (p) return done(p);
+      status.className = "small warn";
+      status.textContent = `Доступів поки немає. Клієнт має надати доступ саме на ${ME.user.email}.`;
+    };
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      const files = [...$("#ob-files").files];
+      if (!files.length) return;
+      if (!$("#ob-consent").checked) { status.className = "small error"; status.textContent = "Потрібна ваша згода"; return; }
+      const tinField = !$("#ob-tin-field").classList.contains("hidden");
+      if (tinField && !/^\d{10}$/.test($("#ob-tin").value.trim())) { status.className = "small error"; status.textContent = "РНОКПП — 10 цифр"; return; }
+      $("#ob-submit").disabled = true;
+      status.className = "small muted";
+      status.textContent = "Відкриваю ключ і отримую дані з Електронного кабінету… Це може тривати до хвилини.";
+      try {
+        const body = { files: await Promise.all(files.map(fileB64)), password: $("#ob-password").value, consent: true,
+          tin: tinField ? $("#ob-tin").value.trim() : undefined };
+        const r = await api("POST", "/api/profiles", JSON.stringify(body), { noProfile: true });
+        if (!r.ok) throw new Error(r.data.error || "Не вдалося підключити ФОП");
+        if (r.data.need_tin) {
+          $("#ob-tin-field").classList.remove("hidden");
+          $("#ob-tin").focus();
+          status.className = "small warn";
+          status.textContent = `Ключ відкрито${r.data.info && r.data.info.name ? ` (${r.data.info.name})` : ""}, але в сертифікаті немає РНОКПП — вкажіть його і натисніть «Підключити ФОП» ще раз.`;
+          return;
+        }
+        const me = await api("GET", "/api/me", undefined, { noProfile: true });
+        if (me.ok) ME = me.data;
+        if (r.data.tax && r.data.tax.last_error) toast("ФОП додано, але дані з Кабінету поки не отримано: " + r.data.tax.last_error, true);
+        else toast(r.data.joined ? "Ключ підтверджено — ви отримали доступ до цього ФОП" : "ФОП підключено, облікові дані завантажено з Кабінету");
+        done(r.data.profile);
+      } catch (err) {
+        status.className = "small error";
+        status.textContent = err.message;
+      } finally {
+        $("#ob-submit").disabled = false;
+      }
+    };
+  });
+}
+
+// ---------------------------------------------------------------- доступ до ФОП (бухгалтер)
+const ROLE_NAMES = { owner: "Власник", accountant: "Бухгалтер" };
+
+async function openAccess() {
+  const dlg = $("#access-dialog");
+  $("#acc-title").textContent = `· ${brandInfo().name || ""} ${brandInfo().tin || ""}`;
+  $("#acc-error").textContent = "";
+  $("#acc-list").innerHTML = `<p class="muted small">Завантажую…</p>`;
+  $("#acc-close").onclick = () => dlg.close();
+  dlg.showModal();
+  await renderAccess();
+  $("#acc-form").onsubmit = async (e) => {
+    e.preventDefault();
+    $("#acc-error").textContent = "";
+    const r = await api("POST", `/api/profiles/${ACTIVE.id}/access`, JSON.stringify({ email: $("#acc-email").value.trim(), role: $("#acc-role").value }));
+    if (!r.ok) { $("#acc-error").textContent = r.data.error || "Не вдалося"; return; }
+    $("#acc-email").value = "";
+    toast(r.data.invited ? `Запрошення збережено: доступ з'явиться після реєстрації ${r.data.email}` : `Доступ надано: ${r.data.user.name || r.data.user.email}`);
+    renderAccess();
+  };
+  $("#acc-list").onclick = async (e) => {
+    const b = e.target.closest("[data-rm]");
+    if (!b) return;
+    const self = b.dataset.rm === String(ME.user.id);
+    if (!confirm(b.dataset.inv ? `Скасувати запрошення для ${b.dataset.inv}?` : self ? "Відмовитися від доступу до цього ФОП?" : "Забрати доступ у цього користувача?")) return;
+    const r = b.dataset.inv
+      ? await api("DELETE", `/api/profiles/${ACTIVE.id}/invites`, JSON.stringify({ email: b.dataset.inv }))
+      : await api("DELETE", `/api/profiles/${ACTIVE.id}/access/${b.dataset.rm}`, "{}");
+    if (!r.ok) { $("#acc-error").textContent = r.data.error || "Не вдалося"; return; }
+    if (self) { R.changes = 0; try { localStorage.removeItem(PROFILE_KEY); } catch {} location.reload(); return; }
+    renderAccess();
+  };
+}
+
+async function renderAccess() {
+  const r = await api("GET", `/api/profiles/${ACTIVE.id}/access`);
+  if (!r.ok) { $("#acc-list").innerHTML = `<p class="error small">${esc(r.data.error || "Не вдалося завантажити")}</p>`; return; }
+  const d = r.data, owner = d.role === "owner";
+  $("#acc-form").classList.toggle("hidden", !owner);
+  $("#acc-hint").classList.toggle("hidden", !owner);
+  $("#acc-list").innerHTML = d.users.map((u) => {
+    const me = u.id === d.me;
+    const can = (owner || me) && !(me && owner && d.users.filter((x) => x.role === "owner").length < 2);
+    return `<div class="acc-row"><div class="acc-who">${esc(u.name || u.email)}${me ? " <span class=\"muted\">(ви)</span>" : ""}<small>${esc(u.email)}</small></div>
+      <span class="acc-role">${ROLE_NAMES[u.role] || u.role}</span>
+      ${can ? `<button class="btn small" type="button" data-rm="${u.id}">${me ? "Відмовитися" : "Забрати доступ"}</button>` : ""}</div>`;
+  }).join("") + d.invites.map((i) => `<div class="acc-row"><div class="acc-who">${esc(i.email)}<small>ще не зареєструвався</small></div>
+      <span class="acc-role pending">${ROLE_NAMES[i.role] || i.role} · запрошення</span>
+      <button class="btn small" type="button" data-rm="inv" data-inv="${esc(i.email)}">Скасувати</button></div>`).join("");
 }
 
 "use strict";
@@ -3897,11 +4257,13 @@ function load(data) {
   const f = freshState();
   if (S.rulesVersion === undefined) S.rulesVersion = 1; // дані, збережені до появи версій правил
   for (const k of Object.keys(f)) if (S[k] === undefined) S[k] = f[k];
+  for (const [k, v] of Object.entries(f.settings)) if (S.settings[k] === undefined) S.settings[k] = v;
   for (const [y, p] of Object.entries(DEFAULT_TAX)) if (!S.taxParams[y]) S.taxParams[y] = { ...p };
 }
 
 let saveTimer, allowWipe = false;
 function save(now = false) {
+  if (typeof renderBrand === "function") renderBrand(); // ПІБ/РНОКПП угорі могли змінитися (Налаштування, Кабінет)
   if (SERVER_MODE) return remoteSave(now);
   clearTimeout(saveTimer);
   const doSave = () => {
@@ -4590,6 +4952,29 @@ function groupRows(g) {
   return [];
 }
 
+// Група платника єдиного податку з блоку 6 (поле з «груп»/GROUP у назві або підписі; поточний — останній запис без дати закінчення)
+function cardEpGroup(g6, epLines) {
+  if (!g6) return null;
+  const rows = [...(g6.values && !Array.isArray(g6.values) ? [g6.values] : []), ...groupRows(g6)];
+  let found = null;
+  for (const row of rows) {
+    if (!row || typeof row !== "object") continue;
+    const ended = Object.entries(row).some(([k, v]) => v && /DATE_?(END|STOP|ANUL|ZAK)|DATA_?(KIN|ANUL)/i.test(k));
+    for (const [k, v] of Object.entries(row)) {
+      if (v == null || v === "") continue;
+      if (!/GROUP|GRUP|GR_?EP|^GR$/i.test(k) && !/груп/i.test((g6.headers || {})[k] || "")) continue;
+      const d = String(v).match(/\b([1-4])\b/);
+      if (d && (!found || !ended)) found = d[1];
+    }
+  }
+  if (found) return found;
+  for (const line of epLines || []) {   // запасний шлях: «Група: 3» у тексті блоку
+    const g = String(line).match(/груп\S*\D{0,12}([1-4])\b/i) || String(line).match(/\b([1-4])\s*груп/i);
+    if (g) return g[1];
+  }
+  return null;
+}
+
 function taxSummary() {
   const g1 = taxGroup(1), g2 = taxGroup(2), g6 = taxGroup(6), g7 = taxGroup(7), g5 = taxGroup(5), g16 = taxGroup(16);
   const any = (pats) => groupValue(g1, pats) ?? groupValue(g2, pats);
@@ -4608,7 +4993,7 @@ function taxSummary() {
   });
   return {
     name: any(TAX_FIELDS.name), tin: any(TAX_FIELDS.tin), address: any(TAX_FIELDS.address), sti: any(TAX_FIELDS.sti),
-    ep, kved, vat: g5 && (groupValue(g5, [/.*/]) != null || groupRows(g5).length) ? true : null, esv: g7,
+    ep, kved, group: cardEpGroup(g6, ep), vat: g5 && (groupValue(g5, [/.*/]) != null || groupRows(g5).length) ? true : null, esv: g7,
   };
 }
 
@@ -4667,7 +5052,7 @@ function loadAccount() {
 
   if (!hasCard) { $("#tax-summary").innerHTML = ""; $("#tax-groups").innerHTML = ""; return; }
   const s = taxSummary();
-  const kv = [["Назва ФОП", s.name], ["Код (РНОКПП)", s.tin], ["Адреса", s.address], ["Податкова", s.sti]].filter(([, v]) => v);
+  const kv = [["Назва ФОП", s.name], ["Код (РНОКПП)", s.tin], ["Група єдиного податку", s.group ? s.group + " група" : null], ["Адреса", s.address], ["Податкова", s.sti]].filter(([, v]) => v);
   const mainK = s.kved.filter((k) => k.main), otherK = s.kved.filter((k) => !k.main);
   $("#tax-summary").innerHTML = `
     <div class="card tax-main">
@@ -4704,7 +5089,7 @@ function renderServerKey() {
       <p class="muted small">Сервер сам оновлює облікові дані щодня й за кнопкою «Оновити з Кабінету». Ключ зашифровано; він не потрапляє ні в браузер, ні в резервні копії і використовується лише для підпису вашого РНОКПП під час входу до Кабінету. Збережено ${new Date(k.created_at * 1000).toLocaleString("uk-UA")}.</p>
       ${!c.tin && !S.settings.owner_tax_id ? `<div class="inline-form warn small"><span>У сертифікаті ключа немає РНОКПП — вкажіть його:</span>
         <input id="kep-tin" inputmode="numeric" maxlength="10" placeholder="1234567890"><button class="btn primary" type="button" id="btn-kep-tin">Зберегти й оновити</button></div>` : ""}
-      <div class="conn-actions"><button class="btn" type="button" id="btn-kep-replace">Замінити ключ</button><button class="btn danger" type="button" id="btn-kep-delete">Видалити ключ із сервера</button></div>`;
+      <div class="conn-actions"><button class="btn" type="button" id="btn-kep-replace">Замінити ключ</button>${serverKep.role === "owner" ? `<button class="btn danger" type="button" id="btn-kep-delete">Видалити ключ із сервера</button>` : ""}</div>`;
     form.classList.toggle("hidden", !box.dataset.replace);
   } else {
     box.classList.add("hidden");
@@ -4793,6 +5178,7 @@ async function refreshPayerCard() {
     const filled = [];
     if (!S.settings.owner_tax_id && s.tin && /^\d{10}$/.test(String(s.tin))) { S.settings.owner_tax_id = String(s.tin); filled.push("РНОКПП"); }
     if (!S.settings.owner_name && s.name) { S.settings.owner_name = String(s.name).replace(/^ФОП\s+/i, ""); filled.push("ПІБ"); }
+    if (s.group) S.settings.fop_group = s.group;
     if (filled.length) reclassifyAll();
     log("info", `Облікові дані з Кабінету оновлено, блоків: ${card.length}`);
     save(true);
@@ -6570,11 +6956,7 @@ function bookData(year, all) {
 }
 
 function fopGroup() {
-  for (const line of taxSummary().ep || []) {
-    const g = String(line).match(/груп\S*\D{0,12}([1-4])\b/i) || String(line).match(/\b([1-4])\s*груп/i);
-    if (g) return g[1];
-  }
-  return "3";
+  return S.settings.fop_group || taxSummary().group || "3";
 }
 
 function buildIncomeBook(year) {
@@ -6906,6 +7288,7 @@ if (SERVER_MODE) {
     return;
   }
 } else load();
+renderBrand();
 // Нові стандартні правила додаються до вже збережених (видалені користувачем раніше правила не повертаємо)
 if ((S.rulesVersion || 1) < RULES_VERSION) {
   const have = new Set(S.rules.map((r) => norm(r.pattern)));

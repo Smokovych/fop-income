@@ -242,6 +242,29 @@ function groupRows(g) {
   return [];
 }
 
+// Група платника єдиного податку з блоку 6 (поле з «груп»/GROUP у назві або підписі; поточний — останній запис без дати закінчення)
+function cardEpGroup(g6, epLines) {
+  if (!g6) return null;
+  const rows = [...(g6.values && !Array.isArray(g6.values) ? [g6.values] : []), ...groupRows(g6)];
+  let found = null;
+  for (const row of rows) {
+    if (!row || typeof row !== "object") continue;
+    const ended = Object.entries(row).some(([k, v]) => v && /DATE_?(END|STOP|ANUL|ZAK)|DATA_?(KIN|ANUL)/i.test(k));
+    for (const [k, v] of Object.entries(row)) {
+      if (v == null || v === "") continue;
+      if (!/GROUP|GRUP|GR_?EP|^GR$/i.test(k) && !/груп/i.test((g6.headers || {})[k] || "")) continue;
+      const d = String(v).match(/\b([1-4])\b/);
+      if (d && (!found || !ended)) found = d[1];
+    }
+  }
+  if (found) return found;
+  for (const line of epLines || []) {   // запасний шлях: «Група: 3» у тексті блоку
+    const g = String(line).match(/груп\S*\D{0,12}([1-4])\b/i) || String(line).match(/\b([1-4])\s*груп/i);
+    if (g) return g[1];
+  }
+  return null;
+}
+
 function taxSummary() {
   const g1 = taxGroup(1), g2 = taxGroup(2), g6 = taxGroup(6), g7 = taxGroup(7), g5 = taxGroup(5), g16 = taxGroup(16);
   const any = (pats) => groupValue(g1, pats) ?? groupValue(g2, pats);
@@ -260,7 +283,7 @@ function taxSummary() {
   });
   return {
     name: any(TAX_FIELDS.name), tin: any(TAX_FIELDS.tin), address: any(TAX_FIELDS.address), sti: any(TAX_FIELDS.sti),
-    ep, kved, vat: g5 && (groupValue(g5, [/.*/]) != null || groupRows(g5).length) ? true : null, esv: g7,
+    ep, kved, group: cardEpGroup(g6, ep), vat: g5 && (groupValue(g5, [/.*/]) != null || groupRows(g5).length) ? true : null, esv: g7,
   };
 }
 
@@ -319,7 +342,7 @@ function loadAccount() {
 
   if (!hasCard) { $("#tax-summary").innerHTML = ""; $("#tax-groups").innerHTML = ""; return; }
   const s = taxSummary();
-  const kv = [["Назва ФОП", s.name], ["Код (РНОКПП)", s.tin], ["Адреса", s.address], ["Податкова", s.sti]].filter(([, v]) => v);
+  const kv = [["Назва ФОП", s.name], ["Код (РНОКПП)", s.tin], ["Група єдиного податку", s.group ? s.group + " група" : null], ["Адреса", s.address], ["Податкова", s.sti]].filter(([, v]) => v);
   const mainK = s.kved.filter((k) => k.main), otherK = s.kved.filter((k) => !k.main);
   $("#tax-summary").innerHTML = `
     <div class="card tax-main">
@@ -356,7 +379,7 @@ function renderServerKey() {
       <p class="muted small">Сервер сам оновлює облікові дані щодня й за кнопкою «Оновити з Кабінету». Ключ зашифровано; він не потрапляє ні в браузер, ні в резервні копії і використовується лише для підпису вашого РНОКПП під час входу до Кабінету. Збережено ${new Date(k.created_at * 1000).toLocaleString("uk-UA")}.</p>
       ${!c.tin && !S.settings.owner_tax_id ? `<div class="inline-form warn small"><span>У сертифікаті ключа немає РНОКПП — вкажіть його:</span>
         <input id="kep-tin" inputmode="numeric" maxlength="10" placeholder="1234567890"><button class="btn primary" type="button" id="btn-kep-tin">Зберегти й оновити</button></div>` : ""}
-      <div class="conn-actions"><button class="btn" type="button" id="btn-kep-replace">Замінити ключ</button><button class="btn danger" type="button" id="btn-kep-delete">Видалити ключ із сервера</button></div>`;
+      <div class="conn-actions"><button class="btn" type="button" id="btn-kep-replace">Замінити ключ</button>${serverKep.role === "owner" ? `<button class="btn danger" type="button" id="btn-kep-delete">Видалити ключ із сервера</button>` : ""}</div>`;
     form.classList.toggle("hidden", !box.dataset.replace);
   } else {
     box.classList.add("hidden");
@@ -445,6 +468,7 @@ async function refreshPayerCard() {
     const filled = [];
     if (!S.settings.owner_tax_id && s.tin && /^\d{10}$/.test(String(s.tin))) { S.settings.owner_tax_id = String(s.tin); filled.push("РНОКПП"); }
     if (!S.settings.owner_name && s.name) { S.settings.owner_name = String(s.name).replace(/^ФОП\s+/i, ""); filled.push("ПІБ"); }
+    if (s.group) S.settings.fop_group = s.group;
     if (filled.length) reclassifyAll();
     log("info", `Облікові дані з Кабінету оновлено, блоків: ${card.length}`);
     save(true);

@@ -1150,11 +1150,7 @@ function bookData(year, all) {
 }
 
 function fopGroup() {
-  for (const line of taxSummary().ep || []) {
-    const g = String(line).match(/груп\S*\D{0,12}([1-4])\b/i) || String(line).match(/\b([1-4])\s*груп/i);
-    if (g) return g[1];
-  }
-  return "3";
+  return S.settings.fop_group || taxSummary().group || "3";
 }
 
 function buildIncomeBook(year) {
@@ -1486,6 +1482,7 @@ if (SERVER_MODE) {
     return;
   }
 } else load();
+renderBrand();
 // Нові стандартні правила додаються до вже збережених (видалені користувачем раніше правила не повертаємо)
 if ((S.rulesVersion || 1) < RULES_VERSION) {
   const have = new Set(S.rules.map((r) => norm(r.pattern)));

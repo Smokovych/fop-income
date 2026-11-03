@@ -1,25 +1,23 @@
-"""HTTP-сервер: JSON API + статичний фронтенд. Лише стандартна бібліотека Python."""
-import csv
+"""HTTP-сервер: JSON API + статичний фронтенд. Лише стандартна бібліотека Python.
+
+Користувачі входять за email і паролем (сесійна cookie). Кожен запит до даних програми стосується
+одного профілю ФОП — його id браузер передає заголовком X-Profile; сервер перевіряє, що користувач
+має доступ до цього ФОП (власник або бухгалтер).
+"""
 import gzip
 import hashlib
 import hmac
-import io
 import json
-import mimetypes
 import os
 import re
 import secrets
 import time
 import traceback
-from datetime import date
-from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote
 
-from . import config, db, tax, store, proxy, bg, ai
-from .classify import reclassify_all
-from .sync import worker, add_connection, set_mono_webhook, handle_mono_webhook, refresh_accounts
+from . import config, db, store, proxy, bg, ai, accounts
 
 SESSION_TTL = 30 * 24 * 3600
 ROUTES = []
@@ -50,45 +48,271 @@ def _secret():
     return s.encode()
 
 
-def make_session():
-    exp = str(int(time.time()) + SESSION_TTL)
-    sig = hmac.new(_secret(), exp.encode(), hashlib.sha256).hexdigest()
-    return f"{exp}.{sig}"
+def _sig(payload):
+    return hmac.new(_secret(), payload.encode(), hashlib.sha256).hexdigest()
 
 
-def valid_session(value):
+def make_session(user):
+    payload = f"{user['id']}.{user['session_gen']}.{int(time.time()) + SESSION_TTL}"
+    return f"{payload}.{_sig(payload)}"
+
+
+def session_user(value):
+    """Користувач із сесійної cookie або None (підпис, строк, і що пароль після входу не змінювали)."""
     try:
-        exp, sig = value.split(".", 1)
-        good = hmac.new(_secret(), exp.encode(), hashlib.sha256).hexdigest()
-        return hmac.compare_digest(sig, good) and int(exp) > time.time()
+        uid, gen, exp, sig = value.split(".")
+        if not hmac.compare_digest(sig, _sig(f"{uid}.{gen}.{exp}")) or int(exp) < time.time():
+            return None
+        u = accounts.get_user(int(uid))
+        return u if u and str(u["session_gen"]) == gen else None
     except Exception:
-        return False
+        return None
 
 
-# ======================================================================= API
+def _role(h, owner=False):
+    """Профіль ФОП цього запиту (заголовок X-Profile) і роль користувача в ньому."""
+    try:
+        pid = int(h.headers.get("X-Profile") or h.qs("profile") or 0)
+    except ValueError:
+        pid = 0
+    if not pid:
+        raise HttpError(400, "Не вибрано ФОП")
+    role = accounts.role_of(h.user["id"], pid)
+    if not role:
+        raise HttpError(403, "Немає доступу до цього ФОП")
+    if owner and role != "owner":
+        raise HttpError(403, "Це може зробити лише власник ФОП")
+    return pid, role
+
+
+def _pid(h, owner=False):
+    return _role(h, owner)[0]
+
+
+def _rate(bucket, key, limit, window):
+    now = time.time()
+    lst = [t for t in bucket.get(key, []) if t > now - window]
+    bucket[key] = lst
+    if len(lst) >= limit:
+        raise HttpError(429, "Забагато спроб. Спробуйте трохи пізніше.")
+    return lst
+
+
+def _me(h):
+    u = h.user
+    return {"server": True, "authenticated": bool(u), "user": accounts.user_public(u),
+            "registration": os.environ.get("REGISTRATION", "open"),
+            "profiles": accounts.profiles_of(u["id"]) if u else [],
+            "last_profile": u["last_profile"] if u else None}
+
+
+# ======================================================================= вхід і реєстрація
 
 @route("GET", "/api/me", public=True)
 def api_me(h, m, body):
-    return {"server": True, "auth_required": bool(config.APP_PASSWORD), "authenticated": h.authenticated()}
+    return _me(h)
 
 
-# ======================================================================= спільне сховище (браузерна програма)
+_login_fails = {}
+_registrations = {}
+_key_tries = {}
+
+
+@route("POST", "/api/login", public=True)
+def api_login(h, m, body):
+    body = body or {}
+    email = accounts.norm_email(body.get("email"))
+    lst = _rate(_login_fails, email, 10, 600)
+    _rate(_login_fails, "ip:" + h.client_ip(), 30, 600)
+    u = accounts.authenticate(email, str(body.get("password") or ""))
+    if not u:
+        lst.append(time.time())
+        _login_fails.setdefault("ip:" + h.client_ip(), []).append(time.time())
+        time.sleep(0.5)
+        raise HttpError(401, "Невірна адреса або пароль")
+    h.user = u
+    h.set_cookie = make_session(u)
+    return _me(h)
+
+
+@route("POST", "/api/register", public=True)
+def api_register(h, m, body):
+    body = body or {}
+    lst = _rate(_registrations, h.client_ip(), int(os.environ.get("REGISTER_PER_HOUR", "20")), 3600)
+    try:
+        u = accounts.register(body.get("email"), body.get("name"), str(body.get("password") or ""))
+    except accounts.AccessError as e:
+        raise HttpError(e.status, str(e))
+    lst.append(time.time())
+    h.user = u
+    h.set_cookie = make_session(u)
+    return _me(h)
+
+
+@route("POST", "/api/logout", public=True)
+def api_logout(h, m, body):
+    h.set_cookie = ""
+    return {"ok": True}
+
+
+@route("POST", "/api/password")
+def api_password(h, m, body):
+    body = body or {}
+    try:
+        u = accounts.change_password(h.user["id"], body.get("old"), body.get("new"))
+    except accounts.AccessError as e:
+        raise HttpError(e.status, str(e))
+    h.set_cookie = make_session(u)   # інші пристрої після зміни пароля мають увійти знову
+    return {"ok": True}
+
+
+# ======================================================================= профілі ФОП і доступ
+
+def _key_files(body):
+    files = (body or {}).get("files") or []
+    if not isinstance(files, list) or not files or len(files) > 5 or not all(isinstance(f, str) and len(f) < 200_000 for f in files):
+        raise HttpError(400, "Оберіть файл ключа")
+    return files
+
+
+def _bg(fn, *a, **kw):
+    try:
+        return fn(*a, **kw)
+    except bg.WorkerError as e:
+        raise HttpError(409, str(e))
+
+
+@route("POST", "/api/profiles")
+def api_profile_add(h, m, body):
+    """Додає ФОП за ключем КЕП: сертифікат дає РНОКПП і ПІБ, ключ зберігається на сервері, облікові дані — з Кабінету."""
+    body = body or {}
+    if not body.get("consent"):
+        raise HttpError(400, "Потрібна ваша згода на отримання даних з Електронного кабінету")
+    files = _key_files(body)
+    _rate(_key_tries, h.user["id"], 20, 3600).append(time.time())   # кожна спроба — важкий процес Node
+    opened = _bg(bg.kep_open, files, str(body.get("password") or ""))
+    info = opened["info"] or {}
+    tin = str(info.get("tin") or "").strip()
+    typed = re.sub(r"\D", "", str(body.get("tin") or ""))
+    if not tin:
+        if not re.fullmatch(r"\d{10}", typed):
+            return {"need_tin": True, "info": info}
+        if accounts.profile_by_tin(typed):
+            raise HttpError(409, "ФОП з цим РНОКПП уже є в програмі, а в сертифікаті ключа РНОКПП немає. "
+                                 "Попросіть власника надати вам доступ.")
+        tin = typed
+    uid = h.user["id"]
+    p = accounts.profile_by_tin(tin)
+    joined = bool(p)
+    if p:
+        # ключ платника підтверджує право на його дані — у тому числі на дані, перенесені з однокористувацької версії
+        if accounts.role_of(uid, p["id"]) != "owner":
+            accounts.grant(p["id"], uid, "owner", uid)
+        pid = p["id"]
+    else:
+        pid = accounts.create_profile(tin, info.get("name") or "", uid)
+    bg.kep_put(pid, opened, uid)
+    accounts.set_last_profile(uid, pid)
+    tax_state = {}
+    try:
+        tax_state = bg.tax_refresh(pid)
+    except bg.WorkerError as e:
+        tax_state = {"last_error": str(e)}
+    if not store.get(pid)["state"]:
+        # Кабінет недоступний — програма все одно стартує з ПІБ і РНОКПП із сертифіката
+        accounts.update_profile(pid, name=info.get("name") or None)
+    st = store.get(pid)
+    if st["state"] is not None:
+        s = st["state"].setdefault("settings", {})
+        changed = False
+        if not s.get("owner_tax_id"):
+            s["owner_tax_id"], changed = tin, True
+        if not s.get("owner_name") and info.get("name"):
+            s["owner_name"], changed = info["name"], True
+        if changed:
+            try:
+                store.put(pid, st["state"], st["version"], device="server")
+            except store.Conflict:
+                pass
+    return {"profile": next((x for x in accounts.profiles_of(uid) if x["id"] == pid), None), "joined": joined,
+            "info": info, "tax": {"fetched_at": tax_state.get("fetched_at"), "last_error": tax_state.get("last_error")}}
+
+
+@route("POST", r"/api/profiles/(?P<pid>\d+)/select")
+def api_profile_select(h, m, body):
+    pid = int(m["pid"])
+    if not accounts.role_of(h.user["id"], pid):
+        raise HttpError(403, "Немає доступу до цього ФОП")
+    accounts.set_last_profile(h.user["id"], pid)
+    return {"ok": True}
+
+
+@route("GET", r"/api/profiles/(?P<pid>\d+)/access")
+def api_access(h, m, body):
+    pid = int(m["pid"])
+    role = accounts.role_of(h.user["id"], pid)
+    if not role:
+        raise HttpError(403, "Немає доступу до цього ФОП")
+    out = accounts.access_list(pid)
+    if role != "owner":
+        out["invites"] = []
+    return {**out, "role": role, "me": h.user["id"], "roles": accounts.ROLES}
+
+
+@route("POST", r"/api/profiles/(?P<pid>\d+)/access")
+def api_access_add(h, m, body):
+    pid = int(m["pid"])
+    if accounts.role_of(h.user["id"], pid) != "owner":
+        raise HttpError(403, "Надавати доступ може лише власник ФОП")
+    try:
+        return accounts.share(pid, h.user["id"], (body or {}).get("email"), (body or {}).get("role") or "accountant")
+    except accounts.AccessError as e:
+        raise HttpError(e.status, str(e))
+
+
+@route("DELETE", r"/api/profiles/(?P<pid>\d+)/access/(?P<uid>\d+)")
+def api_access_remove(h, m, body):
+    pid, uid = int(m["pid"]), int(m["uid"])
+    me = h.user["id"]
+    # власник прибирає будь-кого; будь-хто може відмовитися від власного доступу
+    if accounts.role_of(me, pid) != "owner" and uid != me:
+        raise HttpError(403, "Забирати доступ може лише власник ФОП")
+    if not accounts.role_of(uid, pid):
+        raise HttpError(404, "Цей користувач не має доступу")
+    try:
+        accounts.revoke(pid, uid)
+    except accounts.AccessError as e:
+        raise HttpError(e.status, str(e))
+    return {"ok": True}
+
+
+@route("DELETE", r"/api/profiles/(?P<pid>\d+)/invites")
+def api_invite_cancel(h, m, body):
+    pid = int(m["pid"])
+    if accounts.role_of(h.user["id"], pid) != "owner":
+        raise HttpError(403, "Це може зробити лише власник ФОП")
+    accounts.cancel_invite(pid, (body or {}).get("email"))
+    return {"ok": True}
+
+
+# ======================================================================= спільне сховище (дані ФОП)
 
 @route("GET", "/api/state")
 def api_state_get(h, m, body):
-    return store.get()
+    return store.get(_pid(h))
 
 
 @route("GET", "/api/state/meta")
 def api_state_meta(h, m, body):
-    return store.meta()
+    return store.meta(_pid(h))
 
 
 @route("PUT", "/api/state")
 def api_state_put(h, m, body):
+    pid = _pid(h)
     body = body or {}
     try:
-        v = store.put(body.get("state"), int(body.get("base_version") or 0),
+        v = store.put(pid, body.get("state"), int(body.get("base_version") or 0),
                       device=str(body.get("device") or "")[:64] or None, wipe=bool(body.get("wipe")))
     except store.Conflict as c:
         h.send_json(409, {"error": "conflict", **c.current})
@@ -97,17 +321,18 @@ def api_state_put(h, m, body):
         raise HttpError(409, "Порожні дані не можуть замінити збережені. Для очищення скористайтеся «Видалити всі дані».")
     except ValueError as e:
         raise HttpError(400, str(e))
+    bg._sync_profile(pid, body.get("state"))
     return {"version": v}
 
 
 @route("GET", "/api/backups")
 def api_backups(h, m, body):
-    return store.backups()
+    return store.backups(_pid(h))
 
 
 @route("GET", r"/api/backups/(?P<version>\d+)")
 def api_backup(h, m, body):
-    data = store.backup(int(m["version"]))
+    data = store.backup(_pid(h), int(m["version"]))
     if data is None:
         raise HttpError(404, "Копію не знайдено")
     return data
@@ -115,13 +340,14 @@ def api_backup(h, m, body):
 
 @route("POST", "/api/sync-lock")
 def api_sync_lock(h, m, body):
+    pid = _pid(h)
     device = str((body or {}).get("device") or "")[:64]
     if not device:
         raise HttpError(400, "Не вказано пристрій")
     if (body or {}).get("release"):
-        store.release_sync(device)
+        store.release_sync(pid, device)
         return {"released": True}
-    return store.acquire_sync(device)
+    return store.acquire_sync(pid, device)
 
 
 # ======================================================================= запити до банків і НБУ
@@ -142,30 +368,33 @@ def px_privat(h, m, body):
     _proxied(h, proxy.privat(m["path"], q, h.headers.get("X-Privat-Token", "")))
 
 
+@route("POST", "/proxy/tax-bridge")
+def px_tax(h, m, body):
+    return proxy.tax_bridge(body or {})
+
+
+@route("GET", "/proxy/nbu")
+def px_nbu(h, m, body):
+    q = {k: v[0] for k, v in h._qs.items()}
+    q.setdefault("json", "")
+    _proxied(h, proxy.nbu(q))
+
+
 # ======================================================================= фонове оновлення і ключ КЕП
-
-def _bg(fn, *a):
-    try:
-        return fn(*a)
-    except bg.WorkerError as e:
-        raise HttpError(409, str(e))
-
 
 @route("GET", "/api/server-status")
 def api_server_status(h, m, body):
+    pid, role = _role(h)
     return {"node": bg.node_available(), "secret": len(bg.kep_secret()) >= 16, "interval_min": config.SYNC_INTERVAL_MIN,
-            "bg": bg.status, "kep": bg.kep_get()}
+            "bg": bg.status(pid), "kep": bg.kep_get(pid), "role": role}
 
 
 @route("POST", "/api/kep")
 def api_kep_save(h, m, body):
-    body = body or {}
-    files = body.get("files") or []
-    if not isinstance(files, list) or not files or len(files) > 5 or not all(isinstance(f, str) and len(f) < 200_000 for f in files):
-        raise HttpError(400, "Оберіть файл ключа")
-    info = _bg(bg.kep_save, files, str(body.get("password") or ""))
+    pid = _pid(h)
+    info = _bg(bg.kep_save, pid, _key_files(body), str((body or {}).get("password") or ""), h.user["id"])
     try:
-        tax_state = bg.tax_refresh()
+        tax_state = bg.tax_refresh(pid)
     except bg.WorkerError as e:
         tax_state = {"last_error": str(e)}
     return {"info": info, "tax": {"fetched_at": tax_state.get("fetched_at"), "last_error": tax_state.get("last_error")}}
@@ -173,35 +402,37 @@ def api_kep_save(h, m, body):
 
 @route("DELETE", "/api/kep")
 def api_kep_delete(h, m, body):
-    bg.kep_delete()
+    bg.kep_delete(_pid(h, owner=True))
     return {"ok": True}
 
 
 @route("POST", "/api/tax/refresh")
 def api_tax_refresh(h, m, body):
-    t = _bg(bg.tax_refresh)
+    t = _bg(bg.tax_refresh, _pid(h))
     return {"fetched_at": t.get("fetched_at"), "last_error": t.get("last_error")}
 
 
 @route("POST", "/api/tax/budget")
 def api_tax_budget(h, m, body):
+    pid = _pid(h)
     try:
         year = int((body or {}).get("year"))
     except (TypeError, ValueError):
         raise HttpError(400, "Вкажіть рік")
     if not 2017 <= year <= 2100:
         raise HttpError(400, "Некоректний рік")
-    return _bg(bg.tax_budget, year)
+    return _bg(bg.tax_budget, pid, year)
 
 
 @route("POST", "/api/fiscal/refresh")
 def api_fiscal_refresh(h, m, body):
     # довге завантаження (до кількох хвилин на частину) — у фоні; програма побачить результат при опитуванні стану
-    if not bg.kep_get()["stored"]:
+    pid = _pid(h)
+    if not bg.kep_get(pid)["stored"]:
         raise HttpError(409, "Ключ КЕП не збережено на сервері — збережіть його на вкладці «Облікові дані»")
-    if bg.status.get("running"):
-        return {"started": False, "running": bg.status["running"]}
-    bg.start_fiscal()
+    if bg.status(pid).get("running"):
+        return {"started": False, "running": bg.status(pid)["running"]}
+    bg.start_fiscal(pid)
     return {"started": True}
 
 
@@ -212,9 +443,10 @@ def api_ai_status(h, m, body):
 
 @route("POST", "/api/ai/ask")
 def api_ai_ask(h, m, body):
+    pid = _pid(h)
     body = body or {}
     try:
-        return ai.ask(body.get("question"), body.get("history"))
+        return ai.ask(body.get("question"), body.get("history"), store.get(pid)["state"])
     except ai.AiError as e:
         raise HttpError(e.status, str(e))
 
@@ -228,304 +460,12 @@ def api_ai_kved(h, m, body):
         raise HttpError(e.status, str(e))
 
 
-@route("POST", "/proxy/tax-bridge")
-def px_tax(h, m, body):
-    return proxy.tax_bridge(body or {})
-
-
-@route("GET", "/proxy/nbu")
-def px_nbu(h, m, body):
-    q = {k: v[0] for k, v in h._qs.items()}
-    q.setdefault("json", "")
-    _proxied(h, proxy.nbu(q))
-
-
-_login_fails = []
-
-
-@route("POST", "/api/login", public=True)
-def api_login(h, m, body):
-    if not config.APP_PASSWORD:
-        return {"ok": True}
-    now = time.time()
-    _login_fails[:] = [t for t in _login_fails if t > now - 600]
-    if len(_login_fails) >= 10:
-        raise HttpError(429, "Забагато невдалих спроб. Спробуйте через 10 хвилин.")
-    pw = (body or {}).get("password", "")
-    if not hmac.compare_digest(pw.encode(), config.APP_PASSWORD.encode()):
-        _login_fails.append(now)
-        time.sleep(1.0)
-        raise HttpError(401, "Невірний пароль")
-    h.set_cookie = make_session()
-    return {"ok": True}
-
-
-@route("POST", "/api/logout")
-def api_logout(h, m, body):
-    h.set_cookie = ""
-    return {"ok": True}
-
-
-@route("GET", "/api/categories")
-def api_categories(h, m, body):
-    return config.CATEGORIES
-
-
-@route("GET", "/api/summary")
-def api_summary(h, m, body):
-    year = int(h.qs("year") or date.today().year)
-    s = tax.summary(year)
-    s["upcoming"] = tax.upcoming()
-    s["accounts"] = db.q("SELECT id, name, currency, balance, is_fop, enabled, bank FROM accounts WHERE enabled=1")
-    s["years"] = [r["y"] for r in db.q("SELECT DISTINCT substr(date,1,4) AS y FROM transactions ORDER BY y DESC")]
-    return s
-
-
-@route("GET", "/api/transactions")
-def api_transactions(h, m, body):
-    where, params = ["1=1"], []
-    if h.qs("from"):
-        where.append("t.date >= ?"); params.append(h.qs("from"))
-    if h.qs("to"):
-        where.append("t.date <= ?"); params.append(h.qs("to"))
-    if h.qs("account"):
-        where.append("t.account_id = ?"); params.append(h.qs("account"))
-    if h.qs("category"):
-        where.append("COALESCE(t.manual_category, t.auto_category) = ?"); params.append(h.qs("category"))
-    if h.qs("direction") == "in":
-        where.append("t.amount > 0")
-    elif h.qs("direction") == "out":
-        where.append("t.amount < 0")
-    if h.qs("q"):
-        where.append("(t.description LIKE ? OR t.counter_name LIKE ? OR t.comment LIKE ? OR t.note LIKE ?)")
-        params += ["%" + h.qs("q") + "%"] * 4
-    limit = min(int(h.qs("limit") or 100), 1000)
-    offset = int(h.qs("offset") or 0)
-    w = " AND ".join(where)
-    rows = db.q(f"""SELECT t.id, t.account_id, t.ts, t.date, t.amount, t.currency, t.description, t.comment,
-                    t.counter_name, t.counter_edrpou, t.counter_iban, t.hold, t.auto_category, t.auto_reason,
-                    t.manual_category, t.note, t.nbu_rate, t.uah_amount,
-                    COALESCE(t.manual_category, t.auto_category) AS category, a.name AS account_name
-                    FROM transactions t JOIN accounts a ON a.id=t.account_id
-                    WHERE {w} ORDER BY t.ts DESC LIMIT ? OFFSET ?""", params + [limit, offset])
-    total = db.q1(f"""SELECT COUNT(*) AS n,
-                      SUM(CASE WHEN COALESCE(t.manual_category,t.auto_category)='income' THEN t.uah_amount ELSE 0 END) AS income
-                      FROM transactions t WHERE {w}""", params)
-    return {"items": rows, "total": total["n"], "income": (total["income"] or 0) / 100}
-
-
-@route("PATCH", r"/api/transactions/(?P<id>[^/]+)")
-def api_tx_update(h, m, body):
-    tx_id = m["id"]
-    if not db.q1("SELECT id FROM transactions WHERE id=?", (tx_id,)):
-        raise HttpError(404, "Операцію не знайдено")
-    if "manual_category" in body:
-        cat = body["manual_category"] or None
-        if cat and cat not in config.CATEGORIES:
-            raise HttpError(400, "Невідома категорія")
-        db.ex("UPDATE transactions SET manual_category=? WHERE id=?", (cat, tx_id))
-    if "note" in body:
-        db.ex("UPDATE transactions SET note=? WHERE id=?", ((body["note"] or "")[:500], tx_id))
-    return {"ok": True}
-
-
-# ----------------------------------------------------------------- банки
-
-def _conn_public(c):
-    c = dict(c)
-    tok = c.pop("token")
-    c["token_masked"] = tok[:4] + "…" + tok[-4:] if len(tok) > 10 else "••••"
-    c.pop("webhook_secret", None)
-    c["accounts"] = db.q("SELECT * FROM accounts WHERE connection_id=? ORDER BY is_fop DESC, name", (c["id"],))
-    return c
-
-
-@route("GET", "/api/connections")
-def api_connections(h, m, body):
-    return [_conn_public(c) for c in db.q("SELECT * FROM connections ORDER BY id")]
-
-
-@route("POST", "/api/connections")
-def api_conn_add(h, m, body):
-    try:
-        cid = add_connection(body.get("bank"), body.get("token"), body.get("client_id"), body.get("name"))
-    except ValueError as e:
-        raise HttpError(400, str(e))
-    except Exception as e:
-        raise HttpError(502, f"Банк відхилив запит: {e}")
-    worker.enqueue(cid)
-    return _conn_public(db.q1("SELECT * FROM connections WHERE id=?", (cid,)))
-
-
-@route("DELETE", r"/api/connections/(?P<id>\d+)")
-def api_conn_delete(h, m, body):
-    db.ex("DELETE FROM connections WHERE id=?", (int(m["id"]),))
-    return {"ok": True}
-
-
-@route("POST", r"/api/connections/(?P<id>\d+)/sync")
-def api_conn_sync(h, m, body):
-    worker.enqueue(int(m["id"]))
-    return {"ok": True}
-
-
-@route("POST", r"/api/connections/(?P<id>\d+)/refresh")
-def api_conn_refresh(h, m, body):
-    try:
-        refresh_accounts(int(m["id"]))
-    except Exception as e:
-        raise HttpError(502, str(e))
-    return {"ok": True}
-
-
-@route("POST", r"/api/connections/(?P<id>\d+)/webhook")
-def api_conn_webhook(h, m, body):
-    try:
-        return {"url": set_mono_webhook(int(m["id"]))}
-    except ValueError as e:
-        raise HttpError(400, str(e))
-    except Exception as e:
-        raise HttpError(502, str(e))
-
-
-@route("PATCH", r"/api/accounts/(?P<id>[^/]+)")
-def api_account_update(h, m, body):
-    acc = db.q1("SELECT * FROM accounts WHERE id=?", (m["id"],))
-    if not acc:
-        raise HttpError(404, "Рахунок не знайдено")
-    if "enabled" in body:
-        db.ex("UPDATE accounts SET enabled=? WHERE id=?", (1 if body["enabled"] else 0, acc["id"]))
-        if body["enabled"]:
-            worker.enqueue(acc["connection_id"])
-    if "is_fop" in body:
-        db.ex("UPDATE accounts SET is_fop=? WHERE id=?", (1 if body["is_fop"] else 0, acc["id"]))
-        reclassify_all()
-    return {"ok": True}
-
-
-@route("POST", "/api/sync")
-def api_sync(h, m, body):
-    return {"queued": worker.enqueue()}
-
-
-@route("GET", "/api/sync/status")
-def api_sync_status(h, m, body):
-    return {"status": worker.status, "interval_min": config.SYNC_INTERVAL_MIN,
-            "log": db.q("SELECT * FROM sync_log ORDER BY id DESC LIMIT 30")}
-
-
-# ----------------------------------------------------------------- правила
-
-@route("GET", "/api/rules")
-def api_rules(h, m, body):
-    return db.q("SELECT * FROM rules ORDER BY priority, id")
-
-
-@route("POST", "/api/rules")
-def api_rule_add(h, m, body):
-    pat = (body.get("pattern") or "").strip()
-    if not pat or body.get("category") not in config.CATEGORIES:
-        raise HttpError(400, "Вкажіть текст і категорію")
-    field = body.get("field") if body.get("field") in ("any", "description", "counter_name", "counter_edrpou", "comment") else "any"
-    direction = body.get("direction") if body.get("direction") in ("in", "out", "any") else "in"
-    db.ex("INSERT INTO rules(pattern, field, direction, category, priority) VALUES (?,?,?,?,?)",
-          (pat, field, direction, body["category"], int(body.get("priority") or 50)))
-    return {"reclassified": reclassify_all()}
-
-
-@route("DELETE", r"/api/rules/(?P<id>\d+)")
-def api_rule_delete(h, m, body):
-    db.ex("DELETE FROM rules WHERE id=?", (int(m["id"]),))
-    return {"reclassified": reclassify_all()}
-
-
-# ----------------------------------------------------------------- налаштування
-
-SETTING_KEYS = {"owner_name": str, "owner_tax_id": str, "sync_start": str, "esv_enabled": bool}
-
-
-@route("GET", "/api/settings")
-def api_settings(h, m, body):
-    s = {k: db.get_setting(k) for k in SETTING_KEYS}
-    if s["esv_enabled"] is None:
-        s["esv_enabled"] = True
-    s["sync_start"] = s["sync_start"] or f"{date.today().year}-01-01"
-    s["tax_params"] = db.q("SELECT * FROM tax_params ORDER BY year DESC")
-    s["public_url"] = config.PUBLIC_URL
-    return s
-
-
-@route("PUT", "/api/settings")
-def api_settings_put(h, m, body):
-    for k, typ in SETTING_KEYS.items():
-        if k in body:
-            v = body[k]
-            if k == "sync_start" and v and not re.match(r"^\d{4}-\d{2}-\d{2}$", v):
-                raise HttpError(400, "Дата у форматі РРРР-ММ-ДД")
-            db.set_setting(k, typ(v) if v is not None else None)
-    if "sync_start" in body:
-        db.ex("UPDATE accounts SET synced_to=NULL")  # перезавантажити з нової дати
-    reclassify_all()
-    return {"ok": True}
-
-
-@route("PUT", r"/api/tax-params/(?P<year>\d{4})")
-def api_tax_params(h, m, body):
-    try:
-        vals = [float(body[k]) for k in ("min_wage", "income_limit", "esv_month", "single_tax_rate", "mil_rate")]
-    except (KeyError, TypeError, ValueError):
-        raise HttpError(400, "Заповніть усі параметри числами")
-    db.ex("INSERT OR REPLACE INTO tax_params(year, min_wage, income_limit, esv_month, single_tax_rate, mil_rate)"
-          " VALUES (?,?,?,?,?,?)", [int(m["year"])] + vals)
-    return {"ok": True}
-
-
-# ----------------------------------------------------------------- експорт
-
-@route("GET", "/api/export/income-book.csv")
-def api_export(h, m, body):
-    d_from = h.qs("from") or f"{date.today().year}-01-01"
-    d_to = h.qs("to") or f"{date.today().year}-12-31"
-    out = io.StringIO()
-    w = csv.writer(out, delimiter=";")
-    w.writerow(["№", "Дата", "Сума доходу, грн", "Сума у валюті", "Валюта", "Курс НБУ",
-                "Повернення коштів, грн", "Контрагент", "Призначення", "Рахунок"])
-    total = 0
-    for i, r in enumerate(tax.income_book(d_from, d_to), 1):
-        uah = (r["uah_amount"] or 0) / 100
-        is_ref = r["category"] == "refund_to_buyer"
-        total += -abs(uah) if is_ref else uah
-        w.writerow([i, date.fromisoformat(r["date"]).strftime("%d.%m.%Y"),
-                    "" if is_ref else f"{uah:.2f}".replace(".", ","),
-                    f"{abs(r['amount']) / 100:.2f}".replace(".", ",") if r["currency"] != "UAH" else "",
-                    r["currency"], r["nbu_rate"] or "",
-                    f"{abs(uah):.2f}".replace(".", ",") if is_ref else "",
-                    r["counter_name"], r["description"], r["account"]])
-    w.writerow(["", "Разом", f"{total:.2f}".replace(".", ",")])
-    h.send_raw(200, ("﻿" + out.getvalue()).encode("utf-8"), "text/csv; charset=utf-8",
-               {"Content-Disposition": f'attachment; filename="income-book_{d_from}_{d_to}.csv"'})
-    return None
-
-
-# ----------------------------------------------------------------- вебхук
-
-@route("GET", r"/webhook/mono/(?P<secret>[\w-]+)", public=True)
-def wh_mono_check(h, m, body):
-    return {"ok": True}
-
-
-@route("POST", r"/webhook/mono/(?P<secret>[\w-]+)", public=True)
-def wh_mono(h, m, body):
-    if not handle_mono_webhook(m["secret"], body):
-        raise HttpError(404, "not found")
-    return {"ok": True}
-
-
 # ======================================================================= обробник
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "fop-income"
     set_cookie = None
+    user = None
 
     def log_message(self, fmt, *args):
         if os.environ.get("ACCESS_LOG") == "1":
@@ -534,16 +474,14 @@ class Handler(BaseHTTPRequestHandler):
     def qs(self, key):
         return self._qs.get(key, [None])[0]
 
-    def is_local_client(self):
-        return (self.client_address[0] in ("127.0.0.1", "::1") and not self.headers.get("X-Forwarded-For")) \
-            or os.environ.get("ALLOW_NO_PASSWORD") == "1"
+    def client_ip(self):
+        fwd = (self.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+        return fwd or self.client_address[0]
 
-    def authenticated(self):
-        if not config.APP_PASSWORD:
-            # без пароля програма відкривається лише на цьому ж комп'ютері — не в інтернеті
-            return self.is_local_client()
+    def load_user(self):
         c = SimpleCookie(self.headers.get("Cookie", ""))
-        return "session" in c and valid_session(c["session"].value)
+        self.user = session_user(c["session"].value) if "session" in c else None
+        return self.user
 
     def send_raw(self, status, data, ctype, extra=None):
         extra = dict(extra or {})
@@ -587,9 +525,7 @@ class Handler(BaseHTTPRequestHandler):
             for rmethod, rx, fn, public in ROUTES:
                 mt = rx.match(path)
                 if mt and rmethod == method:
-                    if not public and not self.authenticated():
-                        if not config.APP_PASSWORD:
-                            raise HttpError(503, "На сервері не задано пароль. Додайте змінну APP_PASSWORD у налаштуваннях сервера.")
+                    if not self.load_user() and not public:
                         raise HttpError(401, "Потрібен вхід")
                     body = None
                     if method in ("POST", "PUT", "PATCH", "DELETE"):
@@ -657,12 +593,18 @@ class Handler(BaseHTTPRequestHandler):
         self._dispatch("DELETE")
 
 
-def main():
+def init():
     db.init()
+    accounts.init()
     store.init()
     bg.init()
-    if not config.APP_PASSWORD:
-        print("⚠  APP_PASSWORD не задано — вхід без пароля. Не відкривайте застосунок в інтернет без пароля!")
+    store.migrate_legacy()
+
+
+def main():
+    init()
+    if not config.SECRET_KEY:
+        print("⚠  SECRET_KEY не задано — ключі КЕП не можна зберігати на сервері.")
     if os.environ.get("DISABLE_SYNC") != "1":
         bg.start()  # фонове оновлення виписок і облікових даних (стара серверна модель sync.worker більше не запускається)
     srv = ThreadingHTTPServer((config.HOST, config.PORT), Handler)

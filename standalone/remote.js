@@ -60,9 +60,14 @@ function absorbRemote(theirs) {
 }
 
 // ---------------------------------------------------------------- запити до сервера
+// ME — хто увійшов і до яких ФОП має доступ (/api/me); ACTIVE — ФОП, з даними якого зараз працює програма.
+// Кожен запит до даних іде із заголовком X-Profile — сервер перевіряє доступ до цього ФОП.
+let ME = null, ACTIVE = null;
+const PROFILE_KEY = "fopIncome.profile";
 let loginWaiter = null;
 async function api(method, path, body, opts = {}) {
   const init = { method, credentials: "same-origin", headers: {} };
+  if (ACTIVE && !opts.noProfile) init.headers["X-Profile"] = String(ACTIVE.id);
   if (body !== undefined) {
     init.headers["Content-Type"] = "application/json";
     init.body = body;
@@ -73,25 +78,61 @@ async function api(method, path, body, opts = {}) {
   catch { throw new Error("Немає зв'язку з сервером"); }
   if (r.status === 401 && !opts.noLogin) { await showLogin(); return api(method, path, body, opts); }
   const data = await r.json().catch(() => ({}));
+  if (r.status === 403 && ACTIVE && data.error === "Немає доступу до цього ФОП") lostAccess();
   return { ok: r.ok, status: r.status, data };
 }
 
+let lostShown = false;
+function lostAccess() {
+  if (lostShown) return;
+  lostShown = true;
+  try { localStorage.removeItem(PROFILE_KEY); } catch {}
+  R.changes = 0;
+  alert("Доступ до цього ФОП більше не надається. Програма відкриє інший ФОП.");
+  location.reload();
+}
+
+// Вхід і реєстрація (один екран, два режими)
 function showLogin() {
   if (loginWaiter) return loginWaiter;
   const box = $("#login"), form = $("#login-form"), err = $("#login-error");
+  let mode = "login";
+  const setMode = (m) => {
+    mode = m;
+    for (const b of form.querySelectorAll(".auth-seg button")) b.classList.toggle("active", b.dataset.mode === m);
+    for (const el of form.querySelectorAll(".auth-reg")) el.classList.toggle("hidden", m !== "register");
+    $("#login-name").required = $("#login-password2").required = m === "register";
+    $("#login-password").autocomplete = m === "register" ? "new-password" : "current-password";
+    $("#login-submit").textContent = m === "register" ? "Зареєструватися" : "Увійти";
+    $("#login-lead").textContent = m === "register"
+      ? "Створіть обліковий запис. Далі ви підключите свій ФОП ключем КЕП — або отримаєте доступ до ФОП клієнтів, якщо ви бухгалтер."
+      : "Увійдіть, щоб продовжити";
+    err.textContent = "";
+  };
+  form.querySelectorAll(".auth-seg button").forEach((b) => { b.onclick = () => setMode(b.dataset.mode); });
+  setMode("login");
   box.classList.remove("hidden");
   $("#app").classList.add("hidden");
-  $("#login-password").focus();
+  $("#onboard").classList.add("hidden");
+  $("#login-email").focus();
   loginWaiter = new Promise((resolve) => {
     form.onsubmit = async (e) => {
       e.preventDefault();
       err.textContent = "";
-      const res = await api("POST", "/api/login", JSON.stringify({ password: $("#login-password").value }), { noLogin: true })
+      const email = $("#login-email").value.trim(), password = $("#login-password").value;
+      if (mode === "register" && password !== $("#login-password2").value) { err.textContent = "Паролі не збігаються"; return; }
+      const body = mode === "register" ? { email, password, name: $("#login-name").value.trim() } : { email, password };
+      $("#login-submit").disabled = true;
+      const res = await api("POST", mode === "register" ? "/api/register" : "/api/login", JSON.stringify(body), { noLogin: true, noProfile: true })
         .catch((x) => ({ ok: false, data: { error: x.message } }));
+      $("#login-submit").disabled = false;
       if (!res.ok) { err.textContent = res.data.error || "Не вдалося увійти"; return; }
-      $("#login-password").value = "";
+      // інший користувач на тому самому пристрої — почати з чистого аркуша
+      if (ME && ME.user && ME.user.id !== res.data.user.id) { R.changes = 0; location.reload(); return; }
+      ME = res.data;
+      $("#login-password").value = $("#login-password2").value = "";
       box.classList.add("hidden");
-      $("#app").classList.remove("hidden");
+      if (S) $("#app").classList.remove("hidden");
       loginWaiter = null;
       resolve();
     };
@@ -108,21 +149,41 @@ async function gzipText(text) {
 // ---------------------------------------------------------------- завантаження і збереження
 async function remoteBoot() {
   $("#app").classList.add("hidden");
-  const me = await api("GET", "/api/me", undefined, { noLogin: true });
-  if (!me.data.auth_required && !me.data.authenticated) throw new Error("На сервері не задано пароль. Додайте змінну APP_PASSWORD у налаштуваннях сервера (Railway → Variables) і оновіть сторінку.");
-  if (me.data.auth_required && !me.data.authenticated) await showLogin();
+  const me = await api("GET", "/api/me", undefined, { noLogin: true, noProfile: true });
+  if (!me.ok) throw new Error(me.data.error || "Сервер недоступний");
+  ME = me.data;
+  if (!ME.authenticated) await showLogin();
+  ACTIVE = pickProfile();
+  if (!ACTIVE) {
+    ACTIVE = await showOnboard(false);
+    if (ACTIVE) location.hash = "account"; // щойно підключений ФОП — одразу показати облікові дані з Кабінету
+  }
+  try { localStorage.setItem(PROFILE_KEY, String(ACTIVE.id)); } catch {}
+  if (ME.last_profile !== ACTIVE.id) api("POST", `/api/profiles/${ACTIVE.id}/select`, "{}").catch(() => {});
   $("#app").classList.add("hidden"); // показуємо програму лише після завантаження даних (інакше клік по вкладці — до появи S)
   const res = await api("GET", "/api/state");
   if (!res.ok) throw new Error(res.data.error || "Не вдалося завантажити дані з сервера");
   R.version = res.data.version;
   R.base = res.data.state ? JSON.parse(JSON.stringify(res.data.state)) : null;
   load(res.data.state);
+  // новий ФОП, для якого Кабінет ще не відповів, — ПІБ і РНОКПП із сертифіката ключа
+  if (!S.settings.owner_tax_id && ACTIVE.tin) S.settings.owner_tax_id = ACTIVE.tin;
+  if (!S.settings.owner_name && ACTIVE.name) S.settings.owner_name = ACTIVE.name;
   $("#app").classList.remove("hidden");
   if (!R.base || !sameJSON(R.base, S)) save();
   setInterval(pollRemote, 20000);
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") pollRemote(); });
   addEventListener("beforeunload", (e) => { if (R.changes || R.pushing) { e.preventDefault(); e.returnValue = ""; } });
   adaptUiForServer();
+  initProfileMenu();
+}
+
+// Який ФОП відкрити: останній на цьому пристрої → останній на сервері → перший зі списку
+function pickProfile() {
+  const list = (ME && ME.profiles) || [];
+  let saved = null;
+  try { saved = Number(localStorage.getItem(PROFILE_KEY)); } catch {}
+  return list.find((p) => p.id === saved) || list.find((p) => p.id === ME.last_profile) || list[0] || null;
 }
 
 function remoteSave(now) {
@@ -201,7 +262,7 @@ async function pollRemote(force) {
     absorbRemote(res.data.state);
     R.base = JSON.parse(JSON.stringify(res.data.state));
     R.version = res.data.version;
-    refreshActive(); renderBanner(); setStatus(statusText);
+    refreshActive(); renderBanner(); setStatus(statusText); renderBrand();
   } catch {}
 }
 
@@ -230,6 +291,6 @@ function adaptUiForServer() {
   const out = $("#btn-logout");
   if (out) {
     out.hidden = false;
-    out.onclick = async () => { await api("POST", "/api/logout", "{}", { noLogin: true }); location.reload(); };
+    out.onclick = logout;
   }
 }

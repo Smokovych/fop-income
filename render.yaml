@@ -1,5 +1,5 @@
 # Render Blueprint: New → Blueprint → репозиторій fop-income.
-# Render створить веб-сервіс з Dockerfile, постійний диск для бази і попросить ввести APP_PASSWORD.
+# Render створить веб-сервіс з Dockerfile і постійний диск для бази. Користувачі реєструються в самій програмі.
 services:
   - type: web
     name: fop-income
@@ -9,8 +9,6 @@ services:
     healthCheckPath: /api/me
     autoDeployTrigger: commit  # оновлюється після кожного коміту в main
     envVars:
-      - key: APP_PASSWORD
-        sync: false            # Render попросить ввести пароль при створенні
       - key: SECRET_KEY
         generateValue: true
       - key: ANTHROPIC_API_KEY

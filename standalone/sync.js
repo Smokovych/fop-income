@@ -158,11 +158,13 @@ function load(data) {
   const f = freshState();
   if (S.rulesVersion === undefined) S.rulesVersion = 1; // дані, збережені до появи версій правил
   for (const k of Object.keys(f)) if (S[k] === undefined) S[k] = f[k];
+  for (const [k, v] of Object.entries(f.settings)) if (S.settings[k] === undefined) S.settings[k] = v;
   for (const [y, p] of Object.entries(DEFAULT_TAX)) if (!S.taxParams[y]) S.taxParams[y] = { ...p };
 }
 
 let saveTimer, allowWipe = false;
 function save(now = false) {
+  if (typeof renderBrand === "function") renderBrand(); // ПІБ/РНОКПП угорі могли змінитися (Налаштування, Кабінет)
   if (SERVER_MODE) return remoteSave(now);
   clearTimeout(saveTimer);
   const doSave = () => {

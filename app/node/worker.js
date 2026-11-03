@@ -299,6 +299,7 @@ async function main() {
       let filled = false;
       if (!S.settings.owner_tax_id && s.tin && /^\d{10}$/.test(String(s.tin))) { S.settings.owner_tax_id = String(s.tin); filled = true; }
       if (!S.settings.owner_name && s.name) { S.settings.owner_name = String(s.name).replace(/^ФОП\s+/i, ""); filled = true; }
+      if (s.group) S.settings.fop_group = s.group;
       if (filled) F.reclassifyAll();
       F.log("info", `Облікові дані з Кабінету оновлено сервером, блоків: ${S.tax.card.length}`);
     } catch (e) {

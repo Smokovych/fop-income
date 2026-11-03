@@ -6,6 +6,9 @@
 
 Ключ КЕП зберігається окремо від даних програми (таблиця kep_store, не потрапляє ні в браузер, ні в
 резервні копії) і лише зашифрованим: шифрує і розшифровує воркер ключем, похідним від SECRET_KEY.
+
+Усе — окремо для кожного профілю ФОП (pid): свій стан, свій ключ, свій стан фонової роботи. Одночасно для
+одного ФОП виконується лише одна операція; на весь сервер — не більше WORKER_SLOTS процесів Node.
 """
 import copy
 import json
@@ -16,20 +19,25 @@ import threading
 import time
 import traceback
 
-from . import config, db, store
+from . import config, db, store, accounts
 
 WORKER = os.path.join(config.BASE_DIR, "app", "node", "worker.js")
 MISSING = object()
 TAX_REFRESH_SEC = 24 * 3600
-_run_lock = threading.Lock()   # одночасно — лише одна фонова операція
-status = {"running": None, "last_sync_at": None, "last_error": None, "next_at": None}
+FISCAL_REFRESH_SEC = 6 * 3600
+_slots = threading.BoundedSemaphore(max(1, int(os.environ.get("WORKER_SLOTS", "2"))))
+_locks = {}
+_locks_mx = threading.Lock()
+_status = {}
+loop_status = {"next_at": None}
 
 SCHEMA = """
-CREATE TABLE IF NOT EXISTS kep_store (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
+CREATE TABLE IF NOT EXISTS kep_keys (
+    profile_id INTEGER PRIMARY KEY,
     blob TEXT NOT NULL,
     info TEXT,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    created_by INTEGER
 );
 """
 
@@ -41,6 +49,10 @@ class WorkerError(Exception):
 def init():
     db.connect().executescript(SCHEMA)
     db.connect().commit()
+
+
+def status(pid):
+    return _status.setdefault(pid, {"running": None, "last_sync_at": None, "last_error": None})
 
 
 def node_available():
@@ -58,15 +70,20 @@ def api_config():
             "maxRunMs": int(os.environ.get("SYNC_MAX_RUN_SEC", "480")) * 1000}
 
 
-def run_node(req, timeout=3000):
+def run_node(req, timeout=3000, wait=120):
     if not node_available():
         raise WorkerError("На сервері немає Node.js — фонове оновлення недоступне")
-    req = dict(req, api=api_config())
+    if not _slots.acquire(timeout=wait):
+        raise WorkerError("Сервер зараз зайнятий оновленням інших ФОП — спробуйте за кілька хвилин")
     try:
-        p = subprocess.run([config.NODE_BIN, WORKER], input=json.dumps(req, ensure_ascii=False), capture_output=True,
-                           text=True, timeout=timeout, encoding="utf-8")
-    except subprocess.TimeoutExpired:
-        raise WorkerError("Оновлення триває задовго й перерване") from None
+        req = dict(req, api=api_config())
+        try:
+            p = subprocess.run([config.NODE_BIN, WORKER], input=json.dumps(req, ensure_ascii=False), capture_output=True,
+                               text=True, timeout=timeout, encoding="utf-8")
+        except subprocess.TimeoutExpired:
+            raise WorkerError("Оновлення триває задовго й перерване") from None
+    finally:
+        _slots.release()
     if p.stderr and os.environ.get("WORKER_LOG") == "1":
         print("[worker]", p.stderr[-2000:])
     try:
@@ -113,190 +130,227 @@ def _merge_log(a, b):
     return sorted(out, key=lambda x: -(x.get("ts") or 0))[:200]
 
 
-def apply_result(base, result):
-    """Зливає результат воркера (зміни відносно base) з поточним станом на сервері й записує."""
+def apply_result(pid, base, result):
+    """Зливає результат воркера (зміни відносно base) з поточним станом профілю на сервері й записує."""
     for _ in range(10):
-        cur = store.get()
+        cur = store.get(pid)
         theirs = cur["state"] or {}
         ours = copy.deepcopy(result)
         log = _merge_log(ours.get("log"), theirs.get("log"))
         next_id = max(ours.get("nextId") or 0, theirs.get("nextId") or 0)
-        merged = merge3(base, ours, theirs)
+        merged = merge3(base if base is not None else {}, ours, theirs)
         merged["log"], merged["nextId"] = log, next_id
         try:
-            return store.put(merged, cur["version"], device="server")
+            v = store.put(pid, merged, cur["version"], device="server")
+            _sync_profile(pid, merged)
+            return v
         except store.Conflict:
             continue
     raise WorkerError("Не вдалося записати результат — дані надто часто змінюються")
 
 
+def _sync_profile(pid, state):
+    """Назва, РНОКПП і група ФОП у списку профілів — з даних програми (Налаштування / Кабінет)."""
+    s = (state or {}).get("settings") or {}
+    accounts.update_profile(pid, name=s.get("owner_name") or None, tin=s.get("owner_tax_id") or None,
+                            fop_group=s.get("fop_group") if s.get("fop_group") is not None else None)
+
+
 # ---------------------------------------------------------------- операції
 def _locked(fn):
-    def wrapper(*a, **kw):
-        if not _run_lock.acquire(timeout=0.1):
-            raise WorkerError("Сервер зараз уже оновлює дані — спробуйте за хвилину")
+    """Для одного ФОП одночасно — лише одна фонова операція (перший аргумент — pid)."""
+    def wrapper(pid, *a, **kw):
+        with _locks_mx:
+            lk = _locks.setdefault(pid, threading.Lock())
+        if not lk.acquire(timeout=0.1):
+            raise WorkerError("Сервер зараз уже оновлює дані цього ФОП — спробуйте за хвилину")
         try:
-            return fn(*a, **kw)
+            return fn(pid, *a, **kw)
         finally:
-            _run_lock.release()
+            lk.release()
+    wrapper.__name__ = fn.__name__
     return wrapper
 
 
 @_locked
-def sync_banks():
-    cur = store.get()
-    state = cur["state"]
+def sync_banks(pid):
+    state = store.get(pid)["state"]
     if not state or not state.get("connections"):
         return False
-    lock = store.acquire_sync("server", ttl=3600)
+    lock = store.acquire_sync(pid, "server", ttl=3600)
     if not lock.get("granted"):
         return False  # зараз оновлює браузер — спробуємо наступного разу
-    status["running"] = "sync"
+    st = status(pid)
+    st["running"] = "sync"
     try:
-        out = run_node({"cmd": "sync", "state": state}, timeout=1200)
-        apply_result(state, out["state"])
-        status["last_sync_at"], status["last_error"] = int(time.time()), None
+        out = run_node({"cmd": "sync", "state": state}, timeout=1200, wait=1800)
+        apply_result(pid, state, out["state"])
+        st["last_sync_at"], st["last_error"] = int(time.time()), None
         return "more" if out.get("more") else True
     except WorkerError as e:
-        status["last_error"] = str(e)
+        st["last_error"] = str(e)
         raise
     finally:
-        status["running"] = None
-        store.release_sync("server")
+        st["running"] = None
+        store.release_sync(pid, "server")
 
 
-def kep_get():
-    r = db.q1("SELECT info, created_at FROM kep_store WHERE id=1")
+def _kep_row(pid):
+    return db.q1("SELECT blob, info, created_at FROM kep_keys WHERE profile_id=?", (pid,))
+
+
+def kep_get(pid):
+    r = _kep_row(pid)
     if not r:
         return {"stored": False}
     return {"stored": True, "info": json.loads(r["info"] or "null"), "created_at": r["created_at"]}
 
 
-@_locked
-def kep_save(files, password):
+def kep_open(files, password):
+    """Відкриває ключ у воркері, перевіряє строк дії і повертає {blob (зашифрований ключ), info (сертифікат)}."""
     secret = kep_secret()
     if len(secret) < 16:
         raise WorkerError("На сервері не задано SECRET_KEY — ключ не можна безпечно зберегти")
     out = run_node({"cmd": "kep-store", "files": files, "password": password, "secret": secret,
                     "skipExpiry": os.environ.get("KEP_TEST_SKIP_EXPIRY") == "1"}, timeout=180)
-    db.ex("INSERT INTO kep_store(id, blob, info, created_at) VALUES (1, ?, ?, ?) "
-          "ON CONFLICT(id) DO UPDATE SET blob=excluded.blob, info=excluded.info, created_at=excluded.created_at",
-          (out["blob"], json.dumps(out.get("info"), ensure_ascii=False), int(time.time())))
-    return out.get("info")
+    return {"blob": out["blob"], "info": out.get("info") or {}}
 
 
-def kep_delete():
-    db.ex("DELETE FROM kep_store WHERE id=1")
-
-
-@_locked
-def tax_refresh():
-    r = db.q1("SELECT blob FROM kep_store WHERE id=1")
-    if not r:
-        raise WorkerError("Ключ КЕП не збережено на сервері")
-    cur = store.get()
-    state = cur["state"]
-    if not state:
-        raise WorkerError("Немає даних програми")
-    status["running"] = "tax"
-    try:
-        out = run_node({"cmd": "tax-refresh", "state": state, "blob": r["blob"], "secret": kep_secret()}, timeout=300)
-        apply_result(state, out["state"])
-        return (out["state"].get("tax") or {})
-    finally:
-        status["running"] = None
+def kep_put(pid, opened, uid=None):
+    db.ex("INSERT INTO kep_keys(profile_id, blob, info, created_at, created_by) VALUES (?, ?, ?, ?, ?) "
+          "ON CONFLICT(profile_id) DO UPDATE SET blob=excluded.blob, info=excluded.info, created_at=excluded.created_at, "
+          "created_by=excluded.created_by",
+          (pid, opened["blob"], json.dumps(opened.get("info"), ensure_ascii=False), int(time.time()), uid))
 
 
 @_locked
-def tax_budget(year):
-    """Стан розрахунків з бюджетом за попередній рік (вкладка «Податки» → Рік)."""
-    r = db.q1("SELECT blob FROM kep_store WHERE id=1")
-    if not r:
-        raise WorkerError("Ключ КЕП не збережено на сервері")
-    state = store.get()["state"]
-    if not state:
-        raise WorkerError("Немає даних програми")
-    status["running"] = "tax"
-    try:
-        out = run_node({"cmd": "tax-budget", "state": state, "year": int(year), "blob": r["blob"], "secret": kep_secret()}, timeout=600)
-        apply_result(state, out["state"])
-        return {"error": out.get("error")}
-    finally:
-        status["running"] = None
+def kep_save(pid, files, password, uid=None):
+    opened = kep_open(files, password)
+    tin = str((opened["info"] or {}).get("tin") or "")
+    p = accounts.profile(pid)
+    if tin and p and p["tin"] and tin != p["tin"]:
+        raise WorkerError(f"Цей ключ належить іншому платнику (РНОКПП {tin}), а не ФОП {p['tin']}")
+    kep_put(pid, opened, uid)
+    return opened["info"]
 
 
-FISCAL_REFRESH_SEC = 6 * 3600
+def kep_delete(pid):
+    db.ex("DELETE FROM kep_keys WHERE profile_id=?", (pid,))
 
 
-@_locked
-def fiscal_sync():
-    """Фіскальні чеки ПРРО з фіскального сервера ДПС (вкладка «Фіскальні чеки»). Повертає {"more", "error"}."""
-    r = db.q1("SELECT blob FROM kep_store WHERE id=1")
+def _need_key(pid):
+    r = _kep_row(pid)
     if not r:
         raise WorkerError("Ключ КЕП не збережено на сервері — збережіть його на вкладці «Облікові дані»")
-    state = store.get()["state"]
+    return r
+
+
+@_locked
+def tax_refresh(pid):
+    r = _need_key(pid)
+    state = store.get(pid)["state"]   # для нового ФОП даних ще немає — воркер почне з порожніх
+    st = status(pid)
+    st["running"] = "tax"
+    try:
+        out = run_node({"cmd": "tax-refresh", "state": state, "blob": r["blob"], "secret": kep_secret()}, timeout=300)
+        apply_result(pid, state, out["state"])
+        return (out["state"].get("tax") or {})
+    finally:
+        st["running"] = None
+
+
+@_locked
+def tax_budget(pid, year):
+    """Стан розрахунків з бюджетом за попередній рік (вкладка «Податки» → Рік)."""
+    r = _need_key(pid)
+    state = store.get(pid)["state"]
     if not state:
         raise WorkerError("Немає даних програми")
-    status["running"] = "fiscal"
+    st = status(pid)
+    st["running"] = "tax"
+    try:
+        out = run_node({"cmd": "tax-budget", "state": state, "year": int(year), "blob": r["blob"], "secret": kep_secret()}, timeout=600)
+        apply_result(pid, state, out["state"])
+        return {"error": out.get("error")}
+    finally:
+        st["running"] = None
+
+
+@_locked
+def fiscal_sync(pid):
+    """Фіскальні чеки ПРРО з фіскального сервера ДПС (вкладка «Фіскальні чеки»). Повертає {"more", "error"}."""
+    r = _need_key(pid)
+    state = store.get(pid)["state"]
+    if not state:
+        raise WorkerError("Немає даних програми")
+    st = status(pid)
+    st["running"] = "fiscal"
     try:
         out = run_node({"cmd": "fiscal", "state": state, "blob": r["blob"], "secret": kep_secret()}, timeout=1200)
-        apply_result(state, out["state"])
+        apply_result(pid, state, out["state"])
         f = out["state"].get("fiscal") or {}
         return {"more": bool(out.get("more")), "error": f.get("error")}
     finally:
-        status["running"] = None
+        st["running"] = None
 
 
 # ---------------------------------------------------------------- планувальник
+def _profile_round(pid):
+    """Повертає True, якщо для цього ФОП ще є що довантажувати (наступне коло — за хвилину)."""
+    more = False
+    try:
+        if sync_banks(pid) == "more":
+            more = True  # історія ще довантажується: частину збережено, наступна — за хвилину
+    except WorkerError as e:
+        print(f"ФОП #{pid}: фонове оновлення виписок:", e)
+    except Exception:
+        traceback.print_exc()
+    try:
+        st = store.get(pid)["state"] or {}
+        fetched = ((st.get("tax") or {}).get("fetched_at")) or 0
+        if kep_get(pid)["stored"] and time.time() - fetched > TAX_REFRESH_SEC:
+            tax_refresh(pid)
+    except WorkerError as e:
+        print(f"ФОП #{pid}: оновлення облікових даних:", e)
+    except Exception:
+        traceback.print_exc()
+    try:
+        # фіскальні чеки — лише якщо їх уже вмикали на вкладці (є знайдені ПРРО)
+        f = (store.get(pid)["state"] or {}).get("fiscal") or {}
+        if f.get("registrars") and kep_get(pid)["stored"] and (f.get("more") or time.time() - (f.get("fetched_at") or 0) > FISCAL_REFRESH_SEC):
+            if fiscal_sync(pid).get("more"):
+                more = True
+    except WorkerError as e:
+        print(f"ФОП #{pid}: фіскальні чеки:", e)
+    except Exception:
+        traceback.print_exc()
+    return more
+
+
 def _loop():
     time.sleep(90)  # дати серверу запуститися
     while True:
-        status["next_at"] = int(time.time()) + config.SYNC_INTERVAL_MIN * 60
-        try:
-            if sync_banks() == "more":
-                # історія ще довантажується: частину збережено, наступна — за хвилину
-                status["next_at"] = int(time.time()) + 60
-        except WorkerError as e:
-            print("Фонове оновлення виписок:", e)
-        except Exception:
-            traceback.print_exc()
-        try:
-            st = store.get()["state"] or {}
-            fetched = ((st.get("tax") or {}).get("fetched_at")) or 0
-            if kep_get()["stored"] and time.time() - fetched > TAX_REFRESH_SEC:
-                tax_refresh()
-        except WorkerError as e:
-            print("Оновлення облікових даних:", e)
-        except Exception:
-            traceback.print_exc()
-        try:
-            # фіскальні чеки — лише якщо їх уже вмикали на вкладці (є знайдені ПРРО)
-            f = (store.get()["state"] or {}).get("fiscal") or {}
-            if f.get("registrars") and kep_get()["stored"] and (f.get("more") or time.time() - (f.get("fetched_at") or 0) > FISCAL_REFRESH_SEC):
-                res = fiscal_sync()
-                if res.get("more"):
-                    status["next_at"] = min(status["next_at"], int(time.time()) + 60)
-        except WorkerError as e:
-            print("Фіскальні чеки:", e)
-        except Exception:
-            traceback.print_exc()
-        time.sleep(max(60, status["next_at"] - time.time()))
+        loop_status["next_at"] = int(time.time()) + config.SYNC_INTERVAL_MIN * 60
+        for pid in store.profiles_with_state():
+            if _profile_round(pid):
+                loop_status["next_at"] = min(loop_status["next_at"], int(time.time()) + 60)
+        time.sleep(max(60, loop_status["next_at"] - time.time()))
 
 
-def start_fiscal():
+def start_fiscal(pid):
     """Ручне оновлення чеків: частини одна за одною, поки є що довантажувати (і далі — фоновий цикл)."""
     def run():
         for _ in range(30):
             try:
-                if not fiscal_sync().get("more"):
+                if not fiscal_sync(pid).get("more"):
                     break
             except WorkerError as e:
-                print("Фіскальні чеки:", e)
+                print(f"ФОП #{pid}: фіскальні чеки:", e)
                 break
             except Exception:
                 traceback.print_exc()
                 break
-    threading.Thread(target=run, name="fiscal", daemon=True).start()
+    threading.Thread(target=run, name=f"fiscal-{pid}", daemon=True).start()
 
 
 def start():

@@ -13,7 +13,7 @@ import urllib.request
 from collections import OrderedDict
 from datetime import datetime
 
-from . import config, store
+from . import config
 
 API_URL = os.environ.get("ANTHROPIC_API_URL", "https://api.anthropic.com/v1/messages")
 MODEL = os.environ.get("AI_MODEL", "claude-sonnet-5-5")
@@ -241,13 +241,13 @@ def _call(payload):
         raise AiError(502, f"Немає зв'язку з сервісом ШІ: {getattr(e, 'reason', e)}") from None
 
 
-def ask(question, history=None):
+def ask(question, history=None, state=None):
     if not enabled():
         raise AiError(503, "ШІ не налаштовано: додайте змінну ANTHROPIC_API_KEY у налаштуваннях сервера (Render → Environment)")
     question = str(question or "").strip()[:2000]
     if not question:
         raise AiError(400, "Напишіть запитання")
-    state = store.get()["state"] or {}
+    state = state or {}
     messages = []
     for h in (history or [])[-4:]:
         if isinstance(h, dict) and h.get("q") and h.get("a"):

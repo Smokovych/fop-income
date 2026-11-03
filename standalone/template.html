@@ -80,17 +80,55 @@
 </head>
 <body>
   <div id="login" class="login hidden">
-    <form id="login-form" class="card login-card">
-      <h1>ФОП-дохід</h1>
-      <p class="muted">Введіть пароль, щоб продовжити</p>
-      <input type="password" id="login-password" placeholder="Пароль" autocomplete="current-password" required>
-      <button class="btn primary" type="submit">Увійти</button>
+    <form id="login-form" class="card login-card" autocomplete="on">
+      <h1><span class="logo">₴</span> ФОП-дохід</h1>
+      <div class="seg auth-seg" role="tablist"><button type="button" data-mode="login" class="active">Вхід</button><button type="button" data-mode="register">Реєстрація</button></div>
+      <p class="muted small" id="login-lead">Увійдіть, щоб продовжити</p>
+      <label class="field auth-reg hidden">Ім'я та прізвище<input id="login-name" autocomplete="name" maxlength="120"></label>
+      <label class="field">Електронна пошта<input type="email" id="login-email" autocomplete="username" required></label>
+      <label class="field">Пароль<input type="password" id="login-password" autocomplete="current-password" required minlength="8"></label>
+      <label class="field auth-reg hidden">Повторіть пароль<input type="password" id="login-password2" autocomplete="new-password" minlength="8"></label>
+      <button class="btn primary" type="submit" id="login-submit">Увійти</button>
       <p id="login-error" class="error"></p>
     </form>
   </div>
+  <div id="onboard" class="login hidden">
+    <form id="onboard-form" class="card onboard-card" autocomplete="off">
+      <h1>Додайте свій ФОП</h1>
+      <p class="muted small">Програма відкриє ваш ключ КЕП і за ним отримає з Електронного кабінету платника ваші ПІБ, РНОКПП, групу єдиного податку, КВЕДи, податкову та стан розрахунків з бюджетом — вкладка «Облікові дані» заповниться сама.</p>
+      <label class="field">Файл ключа<span class="muted small"> — .pfx, .jks, Key-6.dat; якщо сертифікат окремо — оберіть і його (.cer)</span>
+        <input type="file" id="ob-files" multiple required accept=".pfx,.p12,.jks,.dat,.zs2,.sk,.pk8,.key,.cer,.crt,.pem"></label>
+      <label class="field">Пароль ключа<input type="password" id="ob-password" autocomplete="off" spellcheck="false" required></label>
+      <label class="field hidden" id="ob-tin-field">РНОКПП<span class="muted small"> — у сертифікаті вашого ключа його немає, вкажіть вручну (10 цифр)</span>
+        <input id="ob-tin" inputmode="numeric" maxlength="10" placeholder="1234567890"></label>
+      <label class="check"><input type="checkbox" id="ob-consent" required> <span>Дозволяю програмі зберегти мій ключ на сервері в зашифрованому вигляді та отримувати мої дані з Електронного кабінету платника. Ключем підписується лише РНОКПП для входу до Кабінету; подати звіт чи сплатити ним програма не може. Ключ можна видалити будь-коли.</span></label>
+      <div class="conn-actions"><button class="btn primary" type="submit" id="ob-submit">Підключити ФОП</button><button class="btn hidden" type="button" id="ob-cancel">Скасувати</button></div>
+      <p id="ob-status" class="small muted"></p>
+      <div class="ob-accountant">
+        <h3>Ви бухгалтер?</h3>
+        <p class="muted small">Попросіть клієнта надати доступ на вашу адресу <b id="ob-email"></b> (у програмі: меню з його ПІБ угорі → «Доступ до ФОП»). Його ФОП з'явиться у вашому списку.</p>
+        <div class="conn-actions"><button class="btn" type="button" id="ob-recheck">Перевірити доступи</button><button class="btn" type="button" id="ob-logout">Вийти</button></div>
+      </div>
+    </form>
+  </div>
+  <dialog id="access-dialog" class="req-dialog access-dialog">
+    <div class="card-head"><h3>Доступ до ФОП <span id="acc-title" class="muted"></span></h3><button class="btn" type="button" id="acc-close">Закрити</button></div>
+    <p class="muted small">Бухгалтер бачить усі дані ФОП, веде облік, оновлює виписки й дані з Кабінету збереженим ключем. Видаляти ключ і роздавати доступ може лише власник.</p>
+    <div id="acc-list"></div>
+    <form id="acc-form" class="inline-form acc-form">
+      <input type="email" id="acc-email" placeholder="email бухгалтера" required>
+      <select id="acc-role"><option value="accountant">Бухгалтер</option><option value="owner">Власник (повний доступ)</option></select>
+      <button class="btn primary" type="submit">Надати доступ</button>
+    </form>
+    <p class="muted small" id="acc-hint">Якщо людина ще не зареєстрована, доступ з'явиться в неї одразу після реєстрації з цією адресою.</p>
+    <p id="acc-error" class="error small"></p>
+  </dialog>
   <div id="app">
     <header class="topbar">
-      <div class="brand"><span class="logo">₴</span> ФОП-дохід</div>
+      <div class="brand-wrap">
+        <button type="button" class="brand" id="brand" disabled><span class="logo">₴</span> <span id="brand-text">ФОП-дохід</span><span class="brand-caret" hidden>▾</span></button>
+        <div class="profile-menu hidden" id="profile-menu" role="menu"></div>
+      </div>
       <nav class="tabs" id="tabs">
         <button data-tab="overview" class="active">Огляд</button>
         <button data-tab="transactions">Операції <span class="badge" id="review-badge" title="Надходження, що чекають підтвердження, що це дохід" hidden></span><span class="badge badge-red" id="kved-badge" title="Надходження, для яких треба підтвердити відповідність КВЕДу" hidden></span></button>
