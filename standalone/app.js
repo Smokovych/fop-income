@@ -166,6 +166,101 @@ async function importPrivatStatement(st) {
   return { acc, added, total: st.txs.length };
 }
 
+// ---------------------------------------------------------------- виписка monobank для ФОП (веб-кабінет / застосунок → «Виписка», Excel або CSV)
+// Шапка: «ФОП …, Виписка за рахунком UA… за період з … по …», далі колонки «Дата операції | Час операції | Вид операції |
+// Деталі операції | Контрагент | ЄДРПОУ контрагента | IBAN контрагента | Сума в валюті рахунку | Сума в валюті операції |
+// Валюта операції | Курс | Еквівалент … НБУ | Сума комісій … | Залишок після операції».
+// Ідентифікатора операції у файлі немає, тому операції, вже завантажені через API, впізнаються за часом і сумою.
+function parseMonoStatement(rows) {
+  let iban = null, owner = "", hi = -1;
+  for (let i = 0; i < Math.min(rows.length, 30); i++) {
+    const line = rows[i].map((c) => String(c ?? "")).join(" ");
+    const m = line.match(/рахунком\s*(UA\d{27})/i) || line.match(/\b(UA\d{27})\b/);
+    if (m && !iban && hi < 0) { iban = m[1].toUpperCase(); owner = (line.match(/^\s*(ФОП[^,]+)/) || [])[1] || ""; }
+    const r = rows[i].map((c) => norm(c));
+    if (r.some((c) => c.startsWith(norm("Дата операції"))) && r.some((c) => c.startsWith(norm("Сума в валюті рахунку")))) { hi = i; break; }
+  }
+  if (!iban || hi < 0) return null;
+  const h = rows[hi].map((c) => norm(c));
+  const col = (name) => h.findIndex((c) => c.startsWith(norm(name)));
+  const c = { date: col("Дата операції"), time: col("Час операції"), desc: col("Деталі операції"), name: col("Контрагент"),
+    edrpou: col("ЄДРПОУ"), cacc: col("IBAN"), sum: col("Сума в валюті рахунку"), sumOp: col("Сума в валюті операції"), curOp: col("Валюта операції") };
+  if (c.date < 0 || c.sum < 0) return null;
+  const g = (r, k) => (c[k] < 0 ? "" : String(r[c[k]] ?? "").trim());
+  // валюта рахунку: валюта операцій, у яких сума в валюті рахунку дорівнює сумі операції
+  const votes = {};
+  for (const r of rows.slice(hi + 1)) {
+    const cur = g(r, "curOp").toUpperCase();
+    if (/^[A-Z]{3}$/.test(cur) && Math.abs(parseNum(r[c.sum]) - parseNum(r[c.sumOp])) < 0.005 && parseNum(r[c.sum])) votes[cur] = (votes[cur] || 0) + 1;
+  }
+  const currency = Object.entries(votes).sort((a, b) => b[1] - a[1]).map(([k]) => k)[0] || null;
+  const txs = [], seen = {};
+  for (const r of rows.slice(hi + 1)) {
+    const ts = parseDateTime(r[c.date], g(r, "time") || undefined);
+    if (ts == null) continue;
+    const amount = Math.round(parseNum(r[c.sum]) * 100);
+    if (!amount) continue;
+    const ed = g(r, "edrpou"), ci = g(r, "cacc");
+    const t = { ts, amount, currency: currency || "UAH", description: g(r, "desc"), comment: "", counter_name: g(r, "name"),
+      counter_edrpou: ed === "-" ? "" : ed, counter_iban: ci === "-" ? "" : ci.toUpperCase(), hold: 0, src: "file" };
+    const base = "f" + hash([iban, t.ts, t.amount, t.description, t.counter_iban].join("|"));
+    seen[base] = (seen[base] || 0) + 1;
+    t.ext_id = base + (seen[base] > 1 ? "~" + seen[base] : "");
+    txs.push(t);
+  }
+  return { bank: "mono", iban, owner, currency, txs };
+}
+
+async function importMonoStatement(st) {
+  // рахунок, уже підключений через API, — за IBAN; інакше рахунок лише з файлів (після підключення API він з ним об'єднається)
+  let acc = Object.values(S.accounts).find((a) => a.bank === "mono" && a.iban === st.iban);
+  if (!acc) {
+    const id = `mono:iban:${st.iban}`;
+    const cur = st.currency || "UAH";
+    S.accounts[id] = { id, connection_id: null, bank: "mono", ext_id: st.iban, iban: st.iban, currency: cur, type: "fop",
+      name: `monobank ФОП ${cur} …${st.iban.slice(-4)}`, balance: null, is_fop: true, enabled: true };
+    acc = S.accounts[id];
+  }
+  for (const t of st.txs) t.currency = st.currency || acc.currency || "UAH";
+  if (st.owner && !S.settings.owner_name) S.settings.owner_name = st.owner.replace(/^ФОП\s+/i, "").trim();
+  // операції, які вже є (через API або з іншого файлу за перехресний період), не дублюємо
+  const have = Object.values(S.tx).filter((t) => t.account_id === acc.id && !String(t.id).startsWith("mono:f"));
+  const fresh = st.txs.filter((it) => !have.some((t) => t.amount === it.amount && Math.abs(t.ts - it.ts) <= 120));
+  const added = await storeTransactions(acc, fresh);
+  const dates = st.txs.map((t) => kyivDate(t.ts)).sort();
+  log("info", `Виписка monobank ${acc.name}: нових операцій ${added} з ${st.txs.length}` + (dates.length ? ` (${fmtDate(dates[0])} – ${fmtDate(dates[dates.length - 1])})` : ""));
+  return { acc, added, total: st.txs.length };
+}
+
+const STATEMENT_BANKS = {
+  privat: { name: "ПриватБанку", parse: parsePrivatStatement, store: importPrivatStatement },
+  mono: { name: "monobank", parse: parseMonoStatement, store: importMonoStatement },
+};
+
+// Імпорт файлів виписки: bank — "privat" | "mono" | null (визначити за вмістом)
+async function importStatementFiles(files, bank) {
+  const done = [], bad = [];
+  for (const f of files) {
+    try {
+      const rows = await readRows(f);
+      const kinds = bank ? [bank] : Object.keys(STATEMENT_BANKS);
+      let st = null, kind = null;
+      for (const k of kinds) { st = STATEMENT_BANKS[k].parse(rows); if (st) { kind = k; break; } }
+      if (!st) { bad.push(f.name); continue; }
+      const r = await STATEMENT_BANKS[kind].store(st);
+      done.push(`${r.acc.name}: +${r.added} з ${r.total}`);
+    } catch (err) { bad.push(`${f.name} (${err.message})`); }
+  }
+  save(true);
+  if (done.length) toast(`Виписку завантажено. ${done.join("; ")}`);
+  if (bad.length) {
+    const what = bank ? `виписку ${STATEMENT_BANKS[bank].name}` : "виписку ПриватБанку чи monobank";
+    toast(`Не схоже на ${what}: ${bad.join(", ")}. Перевірте вибраний банк або оберіть «Інший банк».`, true);
+  }
+  refreshActive();
+  return done.length;
+}
+
 $("#btn-stmt-file").addEventListener("click", () => $("#stmt-file").click());
 $("#stmt-file").addEventListener("change", async (e) => {
   const files = [...e.target.files];
@@ -173,20 +268,8 @@ $("#stmt-file").addEventListener("change", async (e) => {
   if (!files.length) return;
   const btn = $("#btn-stmt-file");
   btn.disabled = true; btn.textContent = "Завантажую…";
-  const done = [], bad = [];
   try {
-    for (const f of files) {
-      try {
-        const st = parsePrivatStatement(await readRows(f));
-        if (!st) { bad.push(f.name); continue; }
-        const r = await importPrivatStatement(st);
-        done.push(`…${st.iban.slice(-4)} ${st.currency}: +${r.added} з ${r.total}`);
-      } catch (err) { bad.push(`${f.name} (${err.message})`); }
-    }
-    save(true);
-    if (done.length) toast(`Виписку завантажено. ${done.join("; ")}`);
-    if (bad.length) toast(`Не схоже на виписку ПриватБанку: ${bad.join(", ")}. Файли інших банків імпортуйте на вкладці «Банки».`, true);
-    refreshActive();
+    await importStatementFiles(files, null);
     if (!$("#history-panel").classList.contains("hidden")) renderHistory();
   } finally { btn.disabled = false; btn.textContent = "Завантажити виписку"; }
 });
@@ -1382,11 +1465,35 @@ $("#form-mono").addEventListener("submit", async (e) => {
   btn.disabled = false; btn.textContent = "Підключити";
 });
 
+const IMPORT_HINTS = {
+  privat: "Приват24 для бізнесу → рахунок → «Виписка» → Excel. Рахунок визначається за IBAN у файлі; операції, уже завантажені через API, не дублюються.",
+  mono: "Веб-кабінет або застосунок monobank → рахунок ФОП → «Виписка» → Excel або CSV. Рахунок визначається за IBAN у файлі; операції, уже завантажені через API, не дублюються.",
+  other: "Програма покаже колонки файлу — перевірте, що дата й сума розпізнані правильно.",
+};
+function updateImportBank() {
+  const b = $("#import-bank").value;
+  $("#import-account-field").classList.toggle("hidden", b !== "other");
+  $("#import-bank-hint").textContent = IMPORT_HINTS[b];
+  try { localStorage.setItem("fopIncome.importBank", b); } catch {}
+}
+try { const b = localStorage.getItem("fopIncome.importBank"); if (b && IMPORT_HINTS[b]) $("#import-bank").value = b; } catch {}
+$("#import-bank").addEventListener("change", updateImportBank);
+updateImportBank();
+
 $("#form-import").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const f = e.target;
-  try { await startImport(f.file.files[0], f.account.value.trim() || "Імпортований рахунок"); f.file.value = ""; }
-  catch (err) { toast(err.message, true); }
+  const f = e.target, bank = f.bank.value, files = [...f.file.files];
+  if (!files.length) return;
+  const btn = f.querySelector("button[type=submit]");
+  btn.disabled = true; btn.textContent = "Імпортую…";
+  try {
+    if (bank === "other") {
+      if (!f.account.value.trim()) { f.account.focus(); throw new Error("Вкажіть назву рахунку"); }
+      await startImport(files[0], f.account.value.trim());
+    } else if (await importStatementFiles(files, bank)) loadBanks();
+    f.file.value = "";
+  } catch (err) { toast(err.message, true); }
+  finally { btn.disabled = false; btn.textContent = "Імпортувати"; }
 });
 
 $("#btn-backup").addEventListener("click", () => {

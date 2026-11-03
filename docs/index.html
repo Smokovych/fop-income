@@ -603,7 +603,7 @@ button.brand:disabled { color: inherit; opacity: 1; }
           <div class="conn-actions">
             <button class="btn" type="button" id="btn-ai">Запитати ШІ</button>
             <button class="btn" type="button" id="btn-history">Попередні роки</button>
-            <button class="btn" type="button" id="btn-stmt-file" title="Виписка ПриватБанку з Приват24 для бізнесу (Excel), можна кілька файлів одразу">Завантажити виписку</button>
+            <button class="btn" type="button" id="btn-stmt-file" title="Виписка ПриватБанку або monobank (Excel/CSV), можна кілька файлів одразу — банк визначається автоматично">Завантажити виписку</button>
             <input type="file" id="stmt-file" accept=".xlsx,.xls,.csv" multiple hidden>
             <a class="btn" id="btn-export" href="#" role="button">Книга обліку доходів</a>
           </div>
@@ -782,15 +782,23 @@ button.brand:disabled { color: inherit; opacity: 1; }
             <p class="muted small">Monobank дозволяє 1 запит виписки на хвилину, тому перше завантаження за рік триває ~12–15 хв. Не закривайте вкладку, поки йде завантаження. Далі виписка оновлюється при кожному відкритті програми та щогодини, поки вона відкрита.</p>
           </form>
           <form class="card" id="form-import">
-            <h3>Інші банки — файл виписки</h3>
+            <h3>Імпорт виписки з файлу</h3>
             <ol class="steps">
               <li>У інтернет-банку вивантажте виписку рахунку ФОП за потрібний період у форматі <b>Excel</b> або <b>CSV</b>.</li>
-              <li>Оберіть файл нижче. Повторне завантаження того ж періоду не створює дублів.</li>
+              <li>Оберіть банк і файл (можна кілька). Повторне завантаження того ж періоду не створює дублів.</li>
             </ol>
-            <label class="small muted">Рахунок
-              <input name="account" placeholder="напр. Ощадбанк ФОП UAH" required value="">
+            <label class="small muted">Банк
+              <select name="bank" id="import-bank">
+                <option value="privat">ПриватБанк</option>
+                <option value="mono">monobank</option>
+                <option value="other">Інший банк</option>
+              </select>
             </label>
-            <input type="file" name="file" accept=".csv,.xlsx,.xls,.txt" required>
+            <p class="muted small" id="import-bank-hint"></p>
+            <label class="small muted hidden" id="import-account-field">Назва рахунку
+              <input name="account" placeholder="напр. Ощадбанк ФОП UAH" value="">
+            </label>
+            <input type="file" name="file" accept=".csv,.xlsx,.xls,.txt" required multiple>
             <button class="btn primary" type="submit">Імпортувати</button>
           </form>
         </div>
@@ -4224,8 +4232,15 @@ const DEFAULT_RULES = [
   // v2: формулювання банку при продажу валютної виручки («Продаж UAH клієнтів / Гривні від продажу 922.00 USD по курсу 44.57»)
   ["гривні від продажу", "any", "in", "currency_exchange", 10, 2],
   ["продаж uah", "any", "in", "currency_exchange", 10, 2],
+  // v4: оплата покупцем у кредит / частинами — гроші від банку покупця за товар, це дохід («Оплата за товар згідно дог спож кредит…»);
+  // повернення покупцю — «Повернення коштів за договором…», «Повернення оплати за продаж…»
+  ["оплата за товар", "description", "in", "income", 15, 4],
+  ["спож кредит", "description", "in", "income", 15, 4],
+  ["споживчого кредит", "description", "in", "income", 15, 4],
+  ["повернення коштів", "any", "out", "refund_to_buyer", 30, 4],
+  ["повернення оплати", "any", "out", "refund_to_buyer", 30, 4],
 ].map(([pattern, field, direction, category, priority, since = 1], i) => ({ id: i + 1, pattern, field, direction, category, priority, since }));
-const RULES_VERSION = 3; // v3: валютна виручка з рахунку 2603 — перекласифікувати збережені операції
+const RULES_VERSION = 4; // v3: валютна виручка з рахунку 2603 — перекласифікувати збережені операції; v4: оплата за товар у кредит, повернення покупцю
 
 // ============================================================ сховище
 const STORE_KEY = "fopIncome.v1";
@@ -4379,6 +4394,8 @@ const REVIEW_KEYWORDS = [
   ["власн", "Схоже на власні кошти", "own_transfer"],
 ];
 
+// оплата за товар (зокрема коштом споживчого кредиту покупця) — дохід, слово «кредит» тут не означає позику
+const SALE_HINTS = ["оплата за товар", "спож кредит", "споживчого кредит"];
 const ACQUIRING_HINTS = ["еквайринг", "операції з пк", "операцій з пк", "операції з платіжн", "операціями з платіжн", "відшкодування за операц", "торговельн", "термінал"];
 
 // Повертає { reason, alt } для операції, що чекає рішення, або null
@@ -4391,7 +4408,7 @@ function reviewInfo(t) {
   if (t.auto_category !== "income") return null;
   const hay = norm([t.description, t.comment, t.counter_name].join(" "));
   // виплати еквайрингу («Відшкодування за операції з ПК…», з утриманою комісією) — звичайний дохід, не питаємо
-  if (t.commission_auto > 0 || ACQUIRING_HINTS.some((h) => hay.includes(norm(h)))) return null;
+  if (t.commission_auto > 0 || [...ACQUIRING_HINTS, ...SALE_HINTS].some((h) => hay.includes(norm(h)))) return null;
   for (const [pat, reason, alt] of REVIEW_KEYWORDS) if (hay.includes(norm(pat))) return { reason, alt };
   return null;
 }
@@ -4448,12 +4465,22 @@ async function fillMissingRates() {
 // ============================================================ збереження операцій
 async function storeTransactions(acc, items) {
   const classify = makeClassifier();
-  let added = 0;
+  let added = 0, fileTwins = null;
   for (const it of items) {
     let id = `${acc.bank}:${it.ext_id}`;
     // переказ між двома своїми рахунками одного банку має однаковий референс в обох — друга сторона отримує свій id
     if (S.tx[id] && S.tx[id].account_id !== acc.id) id = `${acc.bank}:${it.ext_id}@${acc.id}`;
-    const old = S.tx[id];
+    let old = S.tx[id];
+    // операція з API, яку раніше завантажили з файлу виписки (без id банку), — замінюємо, зберігаючи рішення користувача
+    if (!old && it.src !== "file") {
+      if (!fileTwins) fileTwins = Object.values(S.tx).filter((t) => t.src === "file" && t.account_id === acc.id);
+      const twin = fileTwins.find((t) => t.src === "file" && t.amount === it.amount && Math.abs(t.ts - it.ts) <= 120);
+      if (twin) {
+        delete S.tx[twin.id];
+        old = S.tx[id] = Object.assign(twin, { id });
+        delete old.src;
+      }
+    }
     const t = Object.assign(old || { id, account_id: acc.id, manual_category: null, note: "" }, it, { date: kyivDate(it.ts) });
     delete t.ext_id;
     detectCommission(t);
@@ -4535,6 +4562,13 @@ function upsertAccounts(conn, accounts) {
     const old = S.accounts[id];
     if (old) Object.assign(old, { iban: a.iban, currency: a.currency, type: a.type, name: a.name, balance: a.balance });
     else S.accounts[id] = { id, connection_id: conn.id, bank: conn.bank, ...a, enabled: !!a.is_fop, synced_to: null };
+    // рахунок, раніше створений з файлів виписки (за IBAN), переходить у підключений: операції — разом з ним
+    const fileAcc = a.iban && S.accounts[`${conn.bank}:iban:${a.iban}`];
+    if (fileAcc && fileAcc.id !== id) {
+      for (const t of Object.values(S.tx)) if (t.account_id === fileAcc.id) t.account_id = id;
+      S.accounts[id].enabled = S.accounts[id].enabled || fileAcc.enabled;
+      delete S.accounts[fileAcc.id];
+    }
   }
   save();
 }
@@ -5972,6 +6006,101 @@ async function importPrivatStatement(st) {
   return { acc, added, total: st.txs.length };
 }
 
+// ---------------------------------------------------------------- виписка monobank для ФОП (веб-кабінет / застосунок → «Виписка», Excel або CSV)
+// Шапка: «ФОП …, Виписка за рахунком UA… за період з … по …», далі колонки «Дата операції | Час операції | Вид операції |
+// Деталі операції | Контрагент | ЄДРПОУ контрагента | IBAN контрагента | Сума в валюті рахунку | Сума в валюті операції |
+// Валюта операції | Курс | Еквівалент … НБУ | Сума комісій … | Залишок після операції».
+// Ідентифікатора операції у файлі немає, тому операції, вже завантажені через API, впізнаються за часом і сумою.
+function parseMonoStatement(rows) {
+  let iban = null, owner = "", hi = -1;
+  for (let i = 0; i < Math.min(rows.length, 30); i++) {
+    const line = rows[i].map((c) => String(c ?? "")).join(" ");
+    const m = line.match(/рахунком\s*(UA\d{27})/i) || line.match(/\b(UA\d{27})\b/);
+    if (m && !iban && hi < 0) { iban = m[1].toUpperCase(); owner = (line.match(/^\s*(ФОП[^,]+)/) || [])[1] || ""; }
+    const r = rows[i].map((c) => norm(c));
+    if (r.some((c) => c.startsWith(norm("Дата операції"))) && r.some((c) => c.startsWith(norm("Сума в валюті рахунку")))) { hi = i; break; }
+  }
+  if (!iban || hi < 0) return null;
+  const h = rows[hi].map((c) => norm(c));
+  const col = (name) => h.findIndex((c) => c.startsWith(norm(name)));
+  const c = { date: col("Дата операції"), time: col("Час операції"), desc: col("Деталі операції"), name: col("Контрагент"),
+    edrpou: col("ЄДРПОУ"), cacc: col("IBAN"), sum: col("Сума в валюті рахунку"), sumOp: col("Сума в валюті операції"), curOp: col("Валюта операції") };
+  if (c.date < 0 || c.sum < 0) return null;
+  const g = (r, k) => (c[k] < 0 ? "" : String(r[c[k]] ?? "").trim());
+  // валюта рахунку: валюта операцій, у яких сума в валюті рахунку дорівнює сумі операції
+  const votes = {};
+  for (const r of rows.slice(hi + 1)) {
+    const cur = g(r, "curOp").toUpperCase();
+    if (/^[A-Z]{3}$/.test(cur) && Math.abs(parseNum(r[c.sum]) - parseNum(r[c.sumOp])) < 0.005 && parseNum(r[c.sum])) votes[cur] = (votes[cur] || 0) + 1;
+  }
+  const currency = Object.entries(votes).sort((a, b) => b[1] - a[1]).map(([k]) => k)[0] || null;
+  const txs = [], seen = {};
+  for (const r of rows.slice(hi + 1)) {
+    const ts = parseDateTime(r[c.date], g(r, "time") || undefined);
+    if (ts == null) continue;
+    const amount = Math.round(parseNum(r[c.sum]) * 100);
+    if (!amount) continue;
+    const ed = g(r, "edrpou"), ci = g(r, "cacc");
+    const t = { ts, amount, currency: currency || "UAH", description: g(r, "desc"), comment: "", counter_name: g(r, "name"),
+      counter_edrpou: ed === "-" ? "" : ed, counter_iban: ci === "-" ? "" : ci.toUpperCase(), hold: 0, src: "file" };
+    const base = "f" + hash([iban, t.ts, t.amount, t.description, t.counter_iban].join("|"));
+    seen[base] = (seen[base] || 0) + 1;
+    t.ext_id = base + (seen[base] > 1 ? "~" + seen[base] : "");
+    txs.push(t);
+  }
+  return { bank: "mono", iban, owner, currency, txs };
+}
+
+async function importMonoStatement(st) {
+  // рахунок, уже підключений через API, — за IBAN; інакше рахунок лише з файлів (після підключення API він з ним об'єднається)
+  let acc = Object.values(S.accounts).find((a) => a.bank === "mono" && a.iban === st.iban);
+  if (!acc) {
+    const id = `mono:iban:${st.iban}`;
+    const cur = st.currency || "UAH";
+    S.accounts[id] = { id, connection_id: null, bank: "mono", ext_id: st.iban, iban: st.iban, currency: cur, type: "fop",
+      name: `monobank ФОП ${cur} …${st.iban.slice(-4)}`, balance: null, is_fop: true, enabled: true };
+    acc = S.accounts[id];
+  }
+  for (const t of st.txs) t.currency = st.currency || acc.currency || "UAH";
+  if (st.owner && !S.settings.owner_name) S.settings.owner_name = st.owner.replace(/^ФОП\s+/i, "").trim();
+  // операції, які вже є (через API або з іншого файлу за перехресний період), не дублюємо
+  const have = Object.values(S.tx).filter((t) => t.account_id === acc.id && !String(t.id).startsWith("mono:f"));
+  const fresh = st.txs.filter((it) => !have.some((t) => t.amount === it.amount && Math.abs(t.ts - it.ts) <= 120));
+  const added = await storeTransactions(acc, fresh);
+  const dates = st.txs.map((t) => kyivDate(t.ts)).sort();
+  log("info", `Виписка monobank ${acc.name}: нових операцій ${added} з ${st.txs.length}` + (dates.length ? ` (${fmtDate(dates[0])} – ${fmtDate(dates[dates.length - 1])})` : ""));
+  return { acc, added, total: st.txs.length };
+}
+
+const STATEMENT_BANKS = {
+  privat: { name: "ПриватБанку", parse: parsePrivatStatement, store: importPrivatStatement },
+  mono: { name: "monobank", parse: parseMonoStatement, store: importMonoStatement },
+};
+
+// Імпорт файлів виписки: bank — "privat" | "mono" | null (визначити за вмістом)
+async function importStatementFiles(files, bank) {
+  const done = [], bad = [];
+  for (const f of files) {
+    try {
+      const rows = await readRows(f);
+      const kinds = bank ? [bank] : Object.keys(STATEMENT_BANKS);
+      let st = null, kind = null;
+      for (const k of kinds) { st = STATEMENT_BANKS[k].parse(rows); if (st) { kind = k; break; } }
+      if (!st) { bad.push(f.name); continue; }
+      const r = await STATEMENT_BANKS[kind].store(st);
+      done.push(`${r.acc.name}: +${r.added} з ${r.total}`);
+    } catch (err) { bad.push(`${f.name} (${err.message})`); }
+  }
+  save(true);
+  if (done.length) toast(`Виписку завантажено. ${done.join("; ")}`);
+  if (bad.length) {
+    const what = bank ? `виписку ${STATEMENT_BANKS[bank].name}` : "виписку ПриватБанку чи monobank";
+    toast(`Не схоже на ${what}: ${bad.join(", ")}. Перевірте вибраний банк або оберіть «Інший банк».`, true);
+  }
+  refreshActive();
+  return done.length;
+}
+
 $("#btn-stmt-file").addEventListener("click", () => $("#stmt-file").click());
 $("#stmt-file").addEventListener("change", async (e) => {
   const files = [...e.target.files];
@@ -5979,20 +6108,8 @@ $("#stmt-file").addEventListener("change", async (e) => {
   if (!files.length) return;
   const btn = $("#btn-stmt-file");
   btn.disabled = true; btn.textContent = "Завантажую…";
-  const done = [], bad = [];
   try {
-    for (const f of files) {
-      try {
-        const st = parsePrivatStatement(await readRows(f));
-        if (!st) { bad.push(f.name); continue; }
-        const r = await importPrivatStatement(st);
-        done.push(`…${st.iban.slice(-4)} ${st.currency}: +${r.added} з ${r.total}`);
-      } catch (err) { bad.push(`${f.name} (${err.message})`); }
-    }
-    save(true);
-    if (done.length) toast(`Виписку завантажено. ${done.join("; ")}`);
-    if (bad.length) toast(`Не схоже на виписку ПриватБанку: ${bad.join(", ")}. Файли інших банків імпортуйте на вкладці «Банки».`, true);
-    refreshActive();
+    await importStatementFiles(files, null);
     if (!$("#history-panel").classList.contains("hidden")) renderHistory();
   } finally { btn.disabled = false; btn.textContent = "Завантажити виписку"; }
 });
@@ -7188,11 +7305,35 @@ $("#form-mono").addEventListener("submit", async (e) => {
   btn.disabled = false; btn.textContent = "Підключити";
 });
 
+const IMPORT_HINTS = {
+  privat: "Приват24 для бізнесу → рахунок → «Виписка» → Excel. Рахунок визначається за IBAN у файлі; операції, уже завантажені через API, не дублюються.",
+  mono: "Веб-кабінет або застосунок monobank → рахунок ФОП → «Виписка» → Excel або CSV. Рахунок визначається за IBAN у файлі; операції, уже завантажені через API, не дублюються.",
+  other: "Програма покаже колонки файлу — перевірте, що дата й сума розпізнані правильно.",
+};
+function updateImportBank() {
+  const b = $("#import-bank").value;
+  $("#import-account-field").classList.toggle("hidden", b !== "other");
+  $("#import-bank-hint").textContent = IMPORT_HINTS[b];
+  try { localStorage.setItem("fopIncome.importBank", b); } catch {}
+}
+try { const b = localStorage.getItem("fopIncome.importBank"); if (b && IMPORT_HINTS[b]) $("#import-bank").value = b; } catch {}
+$("#import-bank").addEventListener("change", updateImportBank);
+updateImportBank();
+
 $("#form-import").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const f = e.target;
-  try { await startImport(f.file.files[0], f.account.value.trim() || "Імпортований рахунок"); f.file.value = ""; }
-  catch (err) { toast(err.message, true); }
+  const f = e.target, bank = f.bank.value, files = [...f.file.files];
+  if (!files.length) return;
+  const btn = f.querySelector("button[type=submit]");
+  btn.disabled = true; btn.textContent = "Імпортую…";
+  try {
+    if (bank === "other") {
+      if (!f.account.value.trim()) { f.account.focus(); throw new Error("Вкажіть назву рахунку"); }
+      await startImport(files[0], f.account.value.trim());
+    } else if (await importStatementFiles(files, bank)) loadBanks();
+    f.file.value = "";
+  } catch (err) { toast(err.message, true); }
+  finally { btn.disabled = false; btn.textContent = "Імпортувати"; }
 });
 
 $("#btn-backup").addEventListener("click", () => {

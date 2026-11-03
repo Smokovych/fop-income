@@ -200,7 +200,7 @@
           <div class="conn-actions">
             <button class="btn" type="button" id="btn-ai">Запитати ШІ</button>
             <button class="btn" type="button" id="btn-history">Попередні роки</button>
-            <button class="btn" type="button" id="btn-stmt-file" title="Виписка ПриватБанку з Приват24 для бізнесу (Excel), можна кілька файлів одразу">Завантажити виписку</button>
+            <button class="btn" type="button" id="btn-stmt-file" title="Виписка ПриватБанку або monobank (Excel/CSV), можна кілька файлів одразу — банк визначається автоматично">Завантажити виписку</button>
             <input type="file" id="stmt-file" accept=".xlsx,.xls,.csv" multiple hidden>
             <a class="btn" id="btn-export" href="#" role="button">Книга обліку доходів</a>
           </div>
@@ -379,15 +379,23 @@
             <p class="muted small">Monobank дозволяє 1 запит виписки на хвилину, тому перше завантаження за рік триває ~12–15 хв. Не закривайте вкладку, поки йде завантаження. Далі виписка оновлюється при кожному відкритті програми та щогодини, поки вона відкрита.</p>
           </form>
           <form class="card" id="form-import">
-            <h3>Інші банки — файл виписки</h3>
+            <h3>Імпорт виписки з файлу</h3>
             <ol class="steps">
               <li>У інтернет-банку вивантажте виписку рахунку ФОП за потрібний період у форматі <b>Excel</b> або <b>CSV</b>.</li>
-              <li>Оберіть файл нижче. Повторне завантаження того ж періоду не створює дублів.</li>
+              <li>Оберіть банк і файл (можна кілька). Повторне завантаження того ж періоду не створює дублів.</li>
             </ol>
-            <label class="small muted">Рахунок
-              <input name="account" placeholder="напр. Ощадбанк ФОП UAH" required value="">
+            <label class="small muted">Банк
+              <select name="bank" id="import-bank">
+                <option value="privat">ПриватБанк</option>
+                <option value="mono">monobank</option>
+                <option value="other">Інший банк</option>
+              </select>
             </label>
-            <input type="file" name="file" accept=".csv,.xlsx,.xls,.txt" required>
+            <p class="muted small" id="import-bank-hint"></p>
+            <label class="small muted hidden" id="import-account-field">Назва рахунку
+              <input name="account" placeholder="напр. Ощадбанк ФОП UAH" value="">
+            </label>
+            <input type="file" name="file" accept=".csv,.xlsx,.xls,.txt" required multiple>
             <button class="btn primary" type="submit">Імпортувати</button>
           </form>
         </div>

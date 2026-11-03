@@ -125,8 +125,15 @@ const DEFAULT_RULES = [
   // v2: формулювання банку при продажу валютної виручки («Продаж UAH клієнтів / Гривні від продажу 922.00 USD по курсу 44.57»)
   ["гривні від продажу", "any", "in", "currency_exchange", 10, 2],
   ["продаж uah", "any", "in", "currency_exchange", 10, 2],
+  // v4: оплата покупцем у кредит / частинами — гроші від банку покупця за товар, це дохід («Оплата за товар згідно дог спож кредит…»);
+  // повернення покупцю — «Повернення коштів за договором…», «Повернення оплати за продаж…»
+  ["оплата за товар", "description", "in", "income", 15, 4],
+  ["спож кредит", "description", "in", "income", 15, 4],
+  ["споживчого кредит", "description", "in", "income", 15, 4],
+  ["повернення коштів", "any", "out", "refund_to_buyer", 30, 4],
+  ["повернення оплати", "any", "out", "refund_to_buyer", 30, 4],
 ].map(([pattern, field, direction, category, priority, since = 1], i) => ({ id: i + 1, pattern, field, direction, category, priority, since }));
-const RULES_VERSION = 3; // v3: валютна виручка з рахунку 2603 — перекласифікувати збережені операції
+const RULES_VERSION = 4; // v3: валютна виручка з рахунку 2603 — перекласифікувати збережені операції; v4: оплата за товар у кредит, повернення покупцю
 
 // ============================================================ сховище
 const STORE_KEY = "fopIncome.v1";
@@ -280,6 +287,8 @@ const REVIEW_KEYWORDS = [
   ["власн", "Схоже на власні кошти", "own_transfer"],
 ];
 
+// оплата за товар (зокрема коштом споживчого кредиту покупця) — дохід, слово «кредит» тут не означає позику
+const SALE_HINTS = ["оплата за товар", "спож кредит", "споживчого кредит"];
 const ACQUIRING_HINTS = ["еквайринг", "операції з пк", "операцій з пк", "операції з платіжн", "операціями з платіжн", "відшкодування за операц", "торговельн", "термінал"];
 
 // Повертає { reason, alt } для операції, що чекає рішення, або null
@@ -292,7 +301,7 @@ function reviewInfo(t) {
   if (t.auto_category !== "income") return null;
   const hay = norm([t.description, t.comment, t.counter_name].join(" "));
   // виплати еквайрингу («Відшкодування за операції з ПК…», з утриманою комісією) — звичайний дохід, не питаємо
-  if (t.commission_auto > 0 || ACQUIRING_HINTS.some((h) => hay.includes(norm(h)))) return null;
+  if (t.commission_auto > 0 || [...ACQUIRING_HINTS, ...SALE_HINTS].some((h) => hay.includes(norm(h)))) return null;
   for (const [pat, reason, alt] of REVIEW_KEYWORDS) if (hay.includes(norm(pat))) return { reason, alt };
   return null;
 }
@@ -349,12 +358,22 @@ async function fillMissingRates() {
 // ============================================================ збереження операцій
 async function storeTransactions(acc, items) {
   const classify = makeClassifier();
-  let added = 0;
+  let added = 0, fileTwins = null;
   for (const it of items) {
     let id = `${acc.bank}:${it.ext_id}`;
     // переказ між двома своїми рахунками одного банку має однаковий референс в обох — друга сторона отримує свій id
     if (S.tx[id] && S.tx[id].account_id !== acc.id) id = `${acc.bank}:${it.ext_id}@${acc.id}`;
-    const old = S.tx[id];
+    let old = S.tx[id];
+    // операція з API, яку раніше завантажили з файлу виписки (без id банку), — замінюємо, зберігаючи рішення користувача
+    if (!old && it.src !== "file") {
+      if (!fileTwins) fileTwins = Object.values(S.tx).filter((t) => t.src === "file" && t.account_id === acc.id);
+      const twin = fileTwins.find((t) => t.src === "file" && t.amount === it.amount && Math.abs(t.ts - it.ts) <= 120);
+      if (twin) {
+        delete S.tx[twin.id];
+        old = S.tx[id] = Object.assign(twin, { id });
+        delete old.src;
+      }
+    }
     const t = Object.assign(old || { id, account_id: acc.id, manual_category: null, note: "" }, it, { date: kyivDate(it.ts) });
     delete t.ext_id;
     detectCommission(t);
@@ -436,6 +455,13 @@ function upsertAccounts(conn, accounts) {
     const old = S.accounts[id];
     if (old) Object.assign(old, { iban: a.iban, currency: a.currency, type: a.type, name: a.name, balance: a.balance });
     else S.accounts[id] = { id, connection_id: conn.id, bank: conn.bank, ...a, enabled: !!a.is_fop, synced_to: null };
+    // рахунок, раніше створений з файлів виписки (за IBAN), переходить у підключений: операції — разом з ним
+    const fileAcc = a.iban && S.accounts[`${conn.bank}:iban:${a.iban}`];
+    if (fileAcc && fileAcc.id !== id) {
+      for (const t of Object.values(S.tx)) if (t.account_id === fileAcc.id) t.account_id = id;
+      S.accounts[id].enabled = S.accounts[id].enabled || fileAcc.enabled;
+      delete S.accounts[fileAcc.id];
+    }
   }
   save();
 }
